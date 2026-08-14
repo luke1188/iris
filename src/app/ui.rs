@@ -19,7 +19,7 @@ pub fn draw_settings_panel(ctx: &egui::Context, app: &mut LiveVisualizerApp) {
 /// Shared settings UI for docked side panel and detached popout window.
 pub fn draw_settings_contents(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     ui.horizontal(|ui| {
-        ui.heading(RichText::new("Live Visualizer").color(Color32::from_rgb(0, 220, 255)));
+        ui.heading(RichText::new("Iris Visualizer").color(Color32::from_rgb(0, 220, 255)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let pop = if app.settings_popout { "Dock" } else { "↗ Pop out" };
             if ui

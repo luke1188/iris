@@ -29,11 +29,6 @@ jobs:
             target: aarch64-apple-darwin
             artifact: live_visualizer-macos-aarch64
             binary: live_visualizer
-          - name: macOS Intel
-            os: macos-13
-            target: x86_64-apple-darwin
-            artifact: live_visualizer-macos-x64
-            binary: live_visualizer
 
     steps:
       - name: Checkout
@@ -59,6 +54,7 @@ jobs:
           staging="dist/${{ matrix.artifact }}"
           mkdir -p "$staging"
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "$staging/"
+          chmod +x "$staging/${{ matrix.binary }}" || true
           cp -R presets "$staging/presets"
           if [ -d assets ]; then
             cp -R assets "$staging/assets"
@@ -70,21 +66,15 @@ jobs:
             mkdir -p "$staging/docs"
             cp docs/WINDOWS.md "$staging/docs/"
           fi
-          (
-            cd dist
-            if [[ "${{ runner.os }}" == "Windows" ]]; then
-              7z a -tzip "${{ matrix.artifact }}.zip" "${{ matrix.artifact }}"
-            else
-              zip -r "${{ matrix.artifact }}.zip" "${{ matrix.artifact }}"
-            fi
-          )
-          ls -la "dist/${{ matrix.artifact }}.zip"
+          ls -la "$staging"
 
+      # Upload the folder (not a pre-made .zip). Actions already wraps
+      # artifacts once — zipping first causes zip-in-zip downloads.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}.zip
+          path: dist/${{ matrix.artifact }}/
           if-no-files-found: error
 
   release:
@@ -100,12 +90,16 @@ jobs:
         with:
           path: artifacts
 
-      - name: Flatten zips
+      - name: Zip packages for release
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p release
-          find artifacts -type f -name '*.zip' -exec cp {} release/ \;
+          for dir in artifacts/*; do
+            [ -d "$dir" ] || continue
+            name="$(basename "$dir")"
+            (cd "$dir" && zip -r "../../release/${name}.zip" .)
+          done
           ls -la release
 
       - name: Create release

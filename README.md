@@ -1,8 +1,6 @@
-# Live Visualizer
+# Iris Visualizer
 
-Real-time DJ music visualizer for Windows (TV/projector). Native Rust + wgpu + egui — **not** a video editor.
-
-**Current milestone: Phase 3–6 lite** — stage images, band tuning, particles, visual presets.
+Real-time DJ music visualizer for Windows (TV/projector). Native Rust + wgpu + egui
 
 ## Requirements
 
@@ -18,9 +16,7 @@ macOS / Linux can build for development; WASAPI loopback notes below apply to Wi
 cargo run --release
 ```
 
-GitHub Actions builds **Windows x64**, **macOS Apple Silicon**, and **macOS Intel** release zips on pushes/PRs to `main` (Artifacts) and attaches them to GitHub Releases when you push a `v*` tag (e.g. `v0.1.0`).
-
-If a previous run left the process hung (audio device busy), force-quit it first, then relaunch. Closing the window now releases the audio device on exit.
+CI builds **Windows x64** and **macOS Apple Silicon** packages on `main` / PRs (download from the Actions run). Push a `v*` tag to attach real `.zip` files to a GitHub Release.
 
 ### Presets
 
@@ -36,9 +32,9 @@ In the **PRESETS** panel (or `presets/` folder):
 | `neon` | High-energy RGB with particles |
 | `default` | Baseline |
 
-## Loud bar / bass pinning
+## Bass pinning
 
-Open **BAND TUNING**, or load the **`bar`** preset:
+Open **BAND TUNING**:
 
 1. Raise **Threshold / gate**
 2. Lower **Bass** + **Spectrum bass tilt**
@@ -52,8 +48,6 @@ Open **BAND TUNING**, or load the **`bar`** preset:
 | **Esc** | Exit fullscreen |
 | **F1** | Toggle settings UI |
 
-
-
 ## Audio notes (Windows)
 
 - Devices come from the default cpal host (**WASAPI** on Windows).
@@ -62,7 +56,7 @@ Open **BAND TUNING**, or load the **`bar`** preset:
 - Recommended DJ setup for now:
   1. Route Serato master → **Serato Virtual Audio Cable** (or VB-Cable)
   2. Select that cable in Live Visualizer
-  3. Fullscreen the visualizer on the TV/projector monitor (monitor picker arrives in Phase 7)
+  3. Fullscreen the visualizer on the TV/projector monitor
 
 ## Project layout
 
@@ -92,17 +86,6 @@ Audio device (cpal stream thread)
 ```
 
 The renderer will consume `AudioFeatures` only — it never opens the audio device.
-
-## Roadmap
-
-| Phase | Focus |
-|-------|--------|
-| 3 | Background image, center disc, logo |
-| 4 | Circular FFT spectrum (GPU) |
-| 5 | RGB gradient + glow |
-| 6 | GPU particles + beat reactions |
-| 7 | Second-monitor fullscreen, presets, persistence |
-| 8 | Performance polish + packaging |
 
 ## License
 

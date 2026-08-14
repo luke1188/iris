@@ -1799,6 +1799,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "iris_visualizer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cpal",
+ "dirs",
+ "eframe",
+ "egui",
+ "env_logger",
+ "image",
+ "log",
+ "parking_lot",
+ "rfd",
+ "rustfft",
+ "serde",
+ "toml",
+ "windows 0.58.0",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2043,26 +2063,6 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
-
-[[package]]
-name = "live_visualizer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cpal",
- "dirs",
- "eframe",
- "egui",
- "env_logger",
- "image",
- "log",
- "parking_lot",
- "rfd",
- "rustfft",
- "serde",
- "toml",
- "windows 0.58.0",
-]
 
 [[package]]
 name = "lock_api"

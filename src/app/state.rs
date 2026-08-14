@@ -618,7 +618,7 @@ impl eframe::App for LiveVisualizerApp {
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of("live_visualizer_settings"),
                 egui::ViewportBuilder::default()
-                    .with_title("Live Visualizer — Controls")
+                    .with_title("Iris Visualizer — Controls")
                     .with_inner_size([400.0, 780.0])
                     .with_min_inner_size([320.0, 420.0])
                     .with_resizable(true),

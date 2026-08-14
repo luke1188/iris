@@ -1,9 +1,9 @@
 [package]
-name = "live_visualizer"
+name = "iris_visualizer"
 version = "0.1.0"
 edition = "2021"
-description = "Live Visualizer — real-time DJ music visualizer for Windows"
-authors = ["Live Visualizer"]
+description = "Iris Visualizer — real-time DJ music visualizer for Windows"
+authors = ["Iris Visualizer"]
 license = "MIT"
 readme = "README.md"
 

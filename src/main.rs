@@ -1,4 +1,4 @@
-//! Live Visualizer — real-time DJ music visualizer.
+//! Iris Visualizer — real-time DJ music visualizer.
 
 mod app;
 mod audio;
@@ -21,7 +21,7 @@ fn main() -> Result<()> {
     let mut viewport = ViewportBuilder::default()
         .with_inner_size([1280.0, 720.0])
         .with_min_inner_size([800.0, 500.0])
-        .with_title("Live Visualizer");
+        .with_title("Iris Visualizer");
     if let Some(icon) = icon {
         viewport = viewport.with_icon(icon);
     }
@@ -35,11 +35,11 @@ fn main() -> Result<()> {
     };
 
     eframe::run_native(
-        "Live Visualizer",
+        "Iris Visualizer",
         options,
         Box::new(|cc| Ok(Box::new(LiveVisualizerApp::new(cc)))),
     )
-    .map_err(|e| anyhow::anyhow!("Failed to start Live Visualizer: {e}"))?;
+    .map_err(|e| anyhow::anyhow!("Failed to start Iris Visualizer: {e}"))?;
 
     Ok(())
 }
