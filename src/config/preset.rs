@@ -289,12 +289,12 @@ impl Default for ParticleSettings {
 impl Default for BeatSettings {
     fn default() -> Self {
         Self {
-            sensitivity: 1.85,
-            cooldown: 0.09,
-            kick_sensitivity: 1.45,
-            mode: BeatMode::BassKick,
+            sensitivity: 0.85,
+            cooldown: 0.22,
+            kick_sensitivity: 1.0,
+            mode: BeatMode::KickOnly,
             bass_weight: 1.0,
-            rms_weight: 0.35,
+            rms_weight: 0.0,
         }
     }
 }
@@ -302,53 +302,53 @@ impl Default for BeatSettings {
 impl BeatSettings {
     pub fn preset_bass_only() -> Self {
         Self {
-            sensitivity: 1.9,
-            cooldown: 0.1,
-            kick_sensitivity: 1.55,
+            sensitivity: 1.05,
+            cooldown: 0.18,
+            kick_sensitivity: 1.05,
             mode: BeatMode::BassKick,
-            bass_weight: 1.35,
+            bass_weight: 1.0,
             rms_weight: 0.0,
         }
     }
 
     pub fn preset_kick_only() -> Self {
         Self {
-            sensitivity: 2.1,
-            cooldown: 0.11,
-            kick_sensitivity: 1.8,
+            sensitivity: 0.85,
+            cooldown: 0.22,
+            kick_sensitivity: 1.1,
             mode: BeatMode::KickOnly,
-            bass_weight: 1.2,
+            bass_weight: 1.0,
             rms_weight: 0.0,
         }
     }
 
     pub fn preset_bass_level() -> Self {
         Self {
-            sensitivity: 1.7,
-            cooldown: 0.08,
-            kick_sensitivity: 1.2,
+            sensitivity: 1.15,
+            cooldown: 0.16,
+            kick_sensitivity: 0.9,
             mode: BeatMode::BassLevel,
-            bass_weight: 1.4,
-            rms_weight: 0.1,
+            bass_weight: 1.1,
+            rms_weight: 0.0,
         }
     }
 
     pub fn preset_sensitive() -> Self {
         Self {
-            sensitivity: 2.4,
-            cooldown: 0.07,
-            kick_sensitivity: 1.6,
-            mode: BeatMode::FullMix,
-            bass_weight: 1.1,
-            rms_weight: 0.7,
+            sensitivity: 1.35,
+            cooldown: 0.16,
+            kick_sensitivity: 1.2,
+            mode: BeatMode::BassKick,
+            bass_weight: 1.0,
+            rms_weight: 0.0,
         }
     }
 
     pub fn preset_tight() -> Self {
         Self {
-            sensitivity: 1.35,
-            cooldown: 0.14,
-            kick_sensitivity: 1.3,
+            sensitivity: 0.75,
+            cooldown: 0.26,
+            kick_sensitivity: 1.0,
             mode: BeatMode::KickOnly,
             bass_weight: 1.0,
             rms_weight: 0.0,

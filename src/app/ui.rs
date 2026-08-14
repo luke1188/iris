@@ -170,12 +170,17 @@ fn draw_presets_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
 fn draw_beat_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Beat / bounce", true, |ui| {
         level_bar(ui, "Beat", app.features.beat, Color32::from_rgb(255, 100, 255));
+        level_bar(ui, "Kick", app.features.kick, Color32::from_rgb(255, 70, 140));
         ui.add_space(4.0);
 
         let mut changed = false;
         {
             let b = &mut app.settings.beat;
-            ui.label(RichText::new("Trigger mode").small().strong());
+            ui.label(
+                RichText::new("Kick only = drums. Bass level = 808 sustain too.")
+                    .small()
+                    .color(Color32::GRAY),
+            );
             ui.horizontal_wrapped(|ui| {
                 for (mode, label) in [
                     (BeatMode::BassKick, "Bass kick"),
@@ -191,7 +196,7 @@ fn draw_beat_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
             changed |= slider(ui, "Kick punch", &mut b.kick_sensitivity, 0.3..=3.0).changed();
             changed |= slider(ui, "Bass weight", &mut b.bass_weight, 0.0..=2.5).changed();
             changed |= slider(ui, "RMS weight", &mut b.rms_weight, 0.0..=2.0).changed();
-            changed |= slider(ui, "Cooldown", &mut b.cooldown, 0.04..=0.35).changed();
+            changed |= slider(ui, "Cooldown", &mut b.cooldown, 0.16..=0.4).changed();
         }
 
         ui.add_space(6.0);
@@ -213,6 +218,15 @@ fn draw_beat_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                 app.apply_beat_preset(BeatSettings::preset_tight());
             }
         });
+        if ui
+            .button("Reset kick bounce")
+            .on_hover_text("Sets Bass bounce / Beat bounce to values that read on a kick")
+            .clicked()
+        {
+            app.settings.stage.bass_pulse = 0.12;
+            app.settings.stage.beat_pulse = 0.22;
+            app.mark_settings_dirty();
+        }
 
         if changed {
             app.apply_beat_from_ui();
@@ -694,9 +708,11 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
     let min_dim = rect.height().min(rect.width());
     let center = rect.center();
     // Whole disc + logo + ring bounce together (Trap Nation style).
+    // Kick envelope + beat pulse do the hit; sustained bass is a light swell only.
     let pulse = 1.0
-        + features.bass * stage.bass_pulse * 0.85
-        + features.beat * stage.beat_pulse;
+        + features.kick * stage.bass_pulse * 1.15
+        + features.beat * stage.beat_pulse
+        + features.bass * stage.bass_pulse * 0.22;
     let disc_r = (min_dim * stage.disc_radius * pulse).max(24.0);
 
     app.particles.draw(&painter, color_mode);
@@ -772,17 +788,19 @@ fn draw_spectrum(
     }
 
     // Light neighbor blend only — don't erase frequency peaks.
-    let smooth_amt = (vis.smoothing * 0.45).clamp(0.0, 0.55);
+    // Extra-light in the bass third so low / low-mid keep their shape.
     let n = spectrum.len();
     let mut smoothed = spectrum.clone();
+    let smooth_amt = (vis.smoothing * 0.32).clamp(0.0, 0.4);
     if smooth_amt > 0.02 {
         let prev = smoothed.clone();
         for i in 0..n {
-            let a = prev[(i + n - 1) % n];
+            let t = i as f32 / n as f32;
+            let amt = if t < 0.18 { smooth_amt * 0.22 } else { smooth_amt };
+            let a = if i == 0 { prev[i] } else { prev[i - 1] };
             let b = prev[i];
-            let c = prev[(i + 1) % n];
-            let blended = b * (1.0 - smooth_amt) + (a + c) * 0.5 * smooth_amt;
-            // Peak-preserving: never pull a peak down more than ~8%
+            let c = if i + 1 >= n { prev[i] } else { prev[i + 1] };
+            let blended = b * (1.0 - amt) + (a + c) * 0.5 * amt;
             smoothed[i] = blended.max(b * 0.92);
         }
     }

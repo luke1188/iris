@@ -111,7 +111,7 @@ impl ParticleSystem {
             return;
         }
 
-        let bass_push = features.bass * self.settings.bass_reaction * 90.0;
+        let bass_push = features.kick * self.settings.bass_reaction * 90.0;
         let high_spark = features.high * 0.8;
 
         // Continuous ambient spawn
