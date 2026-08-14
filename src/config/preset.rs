@@ -64,8 +64,15 @@ pub struct AppSettings {
     pub tuning: BandTuning,
     #[serde(default)]
     pub background_path: Option<String>,
+    /// Legacy single logo — migrated into `logo_paths` on load.
     #[serde(default)]
     pub logo_path: Option<String>,
+    /// Playlist of center logos (cycles with optional glitch).
+    #[serde(default)]
+    pub logo_paths: Vec<String>,
+    /// Per-logo styles (parallel to `logo_paths`).
+    #[serde(default)]
+    pub logo_styles: Vec<LogoStyle>,
     #[serde(default)]
     pub stage: StageSettings,
     #[serde(default)]
@@ -76,6 +83,83 @@ pub struct AppSettings {
     pub beat: BeatSettings,
     #[serde(default)]
     pub colors: ColorSettings,
+}
+
+/// Per-logo look — each playlist entry can be tuned on its own.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogoStyle {
+    #[serde(default = "default_logo_size")]
+    pub size: f32,
+    #[serde(default)]
+    pub offset_x: f32,
+    #[serde(default)]
+    pub offset_y: f32,
+    #[serde(default = "default_one")]
+    pub tint_r: f32,
+    #[serde(default = "default_one")]
+    pub tint_g: f32,
+    #[serde(default = "default_one")]
+    pub tint_b: f32,
+    #[serde(default = "default_one")]
+    pub opacity: f32,
+    #[serde(default = "default_one")]
+    pub brightness: f32,
+    #[serde(default)]
+    pub motion: LogoMotion,
+    #[serde(default = "default_spin_speed")]
+    pub spin_speed: f32,
+    #[serde(default = "default_motion_amount")]
+    pub motion_amount: f32,
+    /// Override hold time for this logo (0 = use playlist default).
+    #[serde(default)]
+    pub hold_secs: f32,
+    /// Fire a glitch burst when a kick/beat hits while this logo is up.
+    #[serde(default = "default_true_stage")]
+    pub glitch_on_beat: bool,
+}
+
+fn default_logo_size() -> f32 {
+    0.72
+}
+
+impl Default for LogoStyle {
+    fn default() -> Self {
+        Self {
+            size: 0.72,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            tint_r: 1.0,
+            tint_g: 1.0,
+            tint_b: 1.0,
+            opacity: 1.0,
+            brightness: 1.0,
+            motion: LogoMotion::None,
+            spin_speed: 0.15,
+            motion_amount: 0.35,
+            hold_secs: 0.0,
+            glitch_on_beat: true,
+        }
+    }
+}
+
+impl LogoStyle {
+    pub fn from_stage(s: &StageSettings) -> Self {
+        Self {
+            size: s.logo_size,
+            offset_x: s.logo_offset_x,
+            offset_y: s.logo_offset_y,
+            tint_r: s.logo_tint_r,
+            tint_g: s.logo_tint_g,
+            tint_b: s.logo_tint_b,
+            opacity: s.logo_opacity,
+            brightness: s.logo_brightness,
+            motion: s.logo_motion,
+            spin_speed: s.logo_spin_speed,
+            motion_amount: s.logo_motion_amount,
+            hold_secs: 0.0,
+            glitch_on_beat: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +202,19 @@ pub struct StageSettings {
     /// Optional thin tick marks on the black disc that spin with the logo.
     #[serde(default)]
     pub disc_ticks: bool,
+    /// Seconds each logo stays before cycling (multi-logo).
+    #[serde(default = "default_logo_hold")]
+    pub logo_hold_secs: f32,
+    /// Glitch burst when switching logos (transition).
+    #[serde(default = "default_true_stage")]
+    pub logo_glitch: bool,
+    #[serde(default = "default_one")]
+    pub logo_glitch_amount: f32,
+    /// Separate beat-hit glitch (does not share the transition envelope).
+    #[serde(default = "default_true_stage")]
+    pub logo_glitch_on_beat: bool,
+    #[serde(default = "default_one")]
+    pub logo_beat_glitch_amount: f32,
 }
 
 fn default_one() -> f32 {
@@ -130,6 +227,14 @@ fn default_spin_speed() -> f32 {
 
 fn default_motion_amount() -> f32 {
     0.35
+}
+
+fn default_logo_hold() -> f32 {
+    8.0
+}
+
+fn default_true_stage() -> bool {
+    true
 }
 
 impl Default for StageSettings {
@@ -156,6 +261,11 @@ impl Default for StageSettings {
             logo_spin_speed: 0.15,
             logo_motion_amount: 0.35,
             disc_ticks: false,
+            logo_hold_secs: 8.0,
+            logo_glitch: true,
+            logo_glitch_amount: 1.0,
+            logo_glitch_on_beat: true,
+            logo_beat_glitch_amount: 0.85,
         }
     }
 }
@@ -169,12 +279,56 @@ impl Default for AppSettings {
             tuning: BandTuning::default(),
             background_path: None,
             logo_path: None,
+            logo_paths: Vec::new(),
+            logo_styles: Vec::new(),
             stage: StageSettings::default(),
             visualizer: VisualizerSettings::default(),
             particles: ParticleSettings::default(),
             beat: BeatSettings::default(),
             colors: ColorSettings::default(),
         }
+    }
+}
+
+impl AppSettings {
+    /// Fold legacy `logo_path` into `logo_paths` and pad styles.
+    pub fn migrate_logo_paths(&mut self) {
+        if self.logo_paths.is_empty() {
+            if let Some(p) = self.logo_path.take() {
+                if !p.is_empty() {
+                    self.logo_paths.push(p);
+                }
+            }
+        } else {
+            self.logo_path = self.logo_paths.first().cloned();
+        }
+        self.sync_logo_styles();
+    }
+
+    pub fn sync_logo_styles(&mut self) {
+        let n = self.logo_paths.len();
+        while self.logo_styles.len() < n {
+            self.logo_styles.push(LogoStyle::from_stage(&self.stage));
+        }
+        if self.logo_styles.len() > n {
+            self.logo_styles.truncate(n);
+        }
+    }
+
+    pub fn logo_style(&self, index: usize) -> LogoStyle {
+        self.logo_styles
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| LogoStyle::from_stage(&self.stage))
+    }
+
+    pub fn logo_style_mut(&mut self, index: usize) -> &mut LogoStyle {
+        self.sync_logo_styles();
+        if self.logo_styles.is_empty() {
+            self.logo_styles.push(LogoStyle::from_stage(&self.stage));
+        }
+        let i = index.min(self.logo_styles.len() - 1);
+        &mut self.logo_styles[i]
     }
 }
 
@@ -481,7 +635,10 @@ pub fn load_settings() -> Result<AppSettings> {
     }
     let text = fs::read_to_string(&path).with_context(|| format!("Reading {path:?}"))?;
     match toml::from_str::<AppSettings>(&text) {
-        Ok(settings) => Ok(settings),
+        Ok(mut settings) => {
+            settings.migrate_logo_paths();
+            Ok(settings)
+        }
         Err(e) => {
             log::warn!("Corrupt settings.toml ({e}); backing up and using defaults");
             let bak = path.with_extension("toml.bak");

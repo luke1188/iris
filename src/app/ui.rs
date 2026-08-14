@@ -473,158 +473,222 @@ fn draw_background_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
 fn draw_logo_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Center logo", true, |ui| {
         ui.horizontal(|ui| {
-            if ui.button("Choose logo…").clicked() {
+            if ui.button("Add logo…").clicked() {
                 app.pick_logo(ui.ctx());
             }
-            if ui.button("Clear").clicked() {
+            if ui.button("Add many…").clicked() {
+                app.pick_logos(ui.ctx());
+            }
+            if ui.button("Clear all").clicked() {
                 app.clear_logo();
             }
         });
-        if let Some(ref path) = app.settings.logo_path {
-            ui.label(
-                RichText::new(truncate_path(path, 42))
+
+        if !app.settings.logo_paths.is_empty() {
+            ui.add_space(4.0);
+            let paths = app.settings.logo_paths.clone();
+            let active = app.logo_index;
+            for (i, path) in paths.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let selected = i == active;
+                    if ui
+                        .selectable_label(selected, truncate_path(path, 34))
+                        .clicked()
+                    {
+                        app.select_logo(i);
+                    }
+                    if ui.small_button("✕").clicked() {
+                        app.remove_logo_at(i);
+                    }
+                });
+            }
+            if paths.len() > 1 {
+                ui.label(
+                    RichText::new(format!(
+                        "Cycling {} logos · next in {:.0}s",
+                        paths.len(),
+                        app.logo_hold_left.max(0.0)
+                    ))
                     .small()
                     .color(Color32::GRAY),
-            );
+                );
+            }
         }
 
         let mut changed = false;
         {
             let s = &mut app.settings.stage;
             ui.add_space(4.0);
-            ui.label(RichText::new("Size & bounce").small().strong());
+            ui.label(RichText::new("Shared").small().strong());
             changed |= slider(ui, "Disc size", &mut s.disc_radius, 0.06..=0.35).changed();
-            changed |= slider(ui, "Logo size", &mut s.logo_size, 0.25..=1.0).changed();
             changed |= slider(ui, "Bass bounce", &mut s.bass_pulse, 0.0..=0.35).changed();
             changed |= slider(ui, "Beat bounce", &mut s.beat_pulse, 0.0..=0.45).changed();
-
-            ui.add_space(6.0);
-            ui.label(RichText::new("Motion").small().strong());
-            ui.horizontal_wrapped(|ui| {
-                for (mode, label) in [
-                    (LogoMotion::None, "None"),
-                    (LogoMotion::Spin, "Spin"),
-                    (LogoMotion::BeatSpin, "Beat spin"),
-                    (LogoMotion::Wobble, "Wobble"),
-                    (LogoMotion::Pendulum, "Pendulum"),
-                ] {
-                    if ui.selectable_value(&mut s.logo_motion, mode, label).changed() {
-                        changed = true;
-                    }
-                }
-            });
-            if s.logo_motion != LogoMotion::None {
-                changed |= slider(ui, "Speed", &mut s.logo_spin_speed, 0.02..=1.5)
-                    .on_hover_text("Spin: revolutions/sec · Wobble/Pendulum: cycle rate")
-                    .changed();
-                if matches!(s.logo_motion, LogoMotion::Wobble | LogoMotion::Pendulum) {
-                    changed |= slider(ui, "Amount", &mut s.logo_motion_amount, 0.05..=1.0)
-                        .changed();
-                }
-            }
-            changed |= ui
-                .checkbox(&mut s.disc_ticks, "Disc tick marks")
-                .on_hover_text("Subtle marks on the black disc that rotate with the logo")
-                .changed();
-
-            ui.add_space(6.0);
-            ui.label(RichText::new("Alignment").small().strong());
-            changed |= slider(ui, "Offset X", &mut s.logo_offset_x, -0.45..=0.45)
-                .on_hover_text("Negative = left, positive = right")
-                .changed();
-            changed |= slider(ui, "Offset Y", &mut s.logo_offset_y, -0.45..=0.45)
-                .on_hover_text("Negative = up, positive = down")
-                .changed();
-
-            ui.horizontal(|ui| {
-                let step = 0.02_f32;
-                if ui.button("←").clicked() {
-                    s.logo_offset_x = (s.logo_offset_x - step).max(-0.45);
-                    changed = true;
-                }
-                if ui.button("→").clicked() {
-                    s.logo_offset_x = (s.logo_offset_x + step).min(0.45);
-                    changed = true;
-                }
-                if ui.button("↑").clicked() {
-                    s.logo_offset_y = (s.logo_offset_y - step).max(-0.45);
-                    changed = true;
-                }
-                if ui.button("↓").clicked() {
-                    s.logo_offset_y = (s.logo_offset_y + step).min(0.45);
-                    changed = true;
-                }
-                if ui.button("Center").clicked() {
-                    s.logo_offset_x = 0.0;
-                    s.logo_offset_y = 0.0;
-                    changed = true;
-                }
-            });
-
-            ui.add_space(6.0);
-            ui.label(RichText::new("Color").small().strong());
-            changed |= slider(ui, "Brightness", &mut s.logo_brightness, 0.2..=1.8).changed();
-            changed |= slider(ui, "Opacity", &mut s.logo_opacity, 0.15..=1.0).changed();
-            changed |= slider(ui, "Tint R", &mut s.logo_tint_r, 0.0..=1.5).changed();
-            changed |= slider(ui, "Tint G", &mut s.logo_tint_g, 0.0..=1.5).changed();
-            changed |= slider(ui, "Tint B", &mut s.logo_tint_b, 0.0..=1.5).changed();
-
-            // Color preview swatch
-            let preview = logo_tint_color(s);
-            let (swatch, _) =
-                ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), Sense::hover());
-            ui.painter().rect_filled(swatch, 3.0, preview);
+            changed |= ui.checkbox(&mut s.disc_ticks, "Disc tick marks").changed();
 
             ui.add_space(4.0);
-            ui.label(RichText::new("Tint presets").small().strong());
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("White").clicked() {
-                    set_logo_tint(s, 1.0, 1.0, 1.0, 1.0);
-                    changed = true;
-                }
-                if ui.button("Warm").clicked() {
-                    set_logo_tint(s, 1.15, 0.95, 0.75, 1.05);
-                    changed = true;
-                }
-                if ui.button("Cool").clicked() {
-                    set_logo_tint(s, 0.75, 0.95, 1.2, 1.05);
-                    changed = true;
-                }
-                if ui.button("Cyan").clicked() {
-                    set_logo_tint(s, 0.45, 1.05, 1.25, 1.1);
-                    changed = true;
-                }
-                if ui.button("Magenta").clicked() {
-                    set_logo_tint(s, 1.25, 0.45, 1.1, 1.1);
-                    changed = true;
-                }
-                if ui.button("Gold").clicked() {
-                    set_logo_tint(s, 1.25, 0.95, 0.4, 1.1);
-                    changed = true;
-                }
-            });
+            ui.label(RichText::new("Transitions").small().strong());
+            changed |= ui
+                .checkbox(&mut s.logo_glitch, "Glitch transition")
+                .on_hover_text("RGB tear when switching logos (separate from beat glitch)")
+                .changed();
+            if s.logo_glitch {
+                changed |= slider(ui, "Transition amount", &mut s.logo_glitch_amount, 0.2..=1.5)
+                    .changed();
+            }
+
+            ui.add_space(4.0);
+            ui.label(RichText::new("Beat glitch").small().strong());
+            changed |= ui
+                .checkbox(&mut s.logo_glitch_on_beat, "Glitch on beat")
+                .on_hover_text("Short glitch pulse on kicks — independent of logo transitions")
+                .changed();
+            if s.logo_glitch_on_beat {
+                changed |=
+                    slider(ui, "Beat amount", &mut s.logo_beat_glitch_amount, 0.2..=1.5).changed();
+            }
+            if app.logos.len() > 1 {
+                changed |= slider(ui, "Default hold", &mut s.logo_hold_secs, 2.0..=30.0)
+                    .on_hover_text("Used when a logo's own hold is 0")
+                    .changed();
+            }
         }
+
+        if !app.logos.is_empty() {
+            let idx = app.logo_index.min(app.settings.logo_paths.len().saturating_sub(1));
+            app.settings.sync_logo_styles();
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(format!("This logo (#{})", idx + 1))
+                    .small()
+                    .strong(),
+            );
+            {
+                let style = app.settings.logo_style_mut(idx);
+                changed |= slider(ui, "Size", &mut style.size, 0.25..=1.0).changed();
+                changed |= slider(ui, "Offset X", &mut style.offset_x, -0.45..=0.45).changed();
+                changed |= slider(ui, "Offset Y", &mut style.offset_y, -0.45..=0.45).changed();
+                ui.horizontal(|ui| {
+                    let step = 0.02_f32;
+                    if ui.button("←").clicked() {
+                        style.offset_x = (style.offset_x - step).max(-0.45);
+                        changed = true;
+                    }
+                    if ui.button("→").clicked() {
+                        style.offset_x = (style.offset_x + step).min(0.45);
+                        changed = true;
+                    }
+                    if ui.button("↑").clicked() {
+                        style.offset_y = (style.offset_y - step).max(-0.45);
+                        changed = true;
+                    }
+                    if ui.button("↓").clicked() {
+                        style.offset_y = (style.offset_y + step).min(0.45);
+                        changed = true;
+                    }
+                    if ui.button("Center").clicked() {
+                        style.offset_x = 0.0;
+                        style.offset_y = 0.0;
+                        changed = true;
+                    }
+                });
+
+                ui.add_space(4.0);
+                ui.label(RichText::new("Motion").small().strong());
+                ui.horizontal_wrapped(|ui| {
+                    for (mode, label) in [
+                        (LogoMotion::None, "None"),
+                        (LogoMotion::Spin, "Spin"),
+                        (LogoMotion::BeatSpin, "Beat spin"),
+                        (LogoMotion::Wobble, "Wobble"),
+                        (LogoMotion::Pendulum, "Pendulum"),
+                    ] {
+                        if ui.selectable_value(&mut style.motion, mode, label).changed() {
+                            changed = true;
+                        }
+                    }
+                });
+                if style.motion != LogoMotion::None {
+                    changed |= slider(ui, "Speed", &mut style.spin_speed, 0.02..=1.5).changed();
+                    if matches!(style.motion, LogoMotion::Wobble | LogoMotion::Pendulum) {
+                        changed |=
+                            slider(ui, "Amount", &mut style.motion_amount, 0.05..=1.0).changed();
+                    }
+                }
+
+                ui.add_space(4.0);
+                ui.label(RichText::new("Color").small().strong());
+                changed |= slider(ui, "Brightness", &mut style.brightness, 0.2..=1.8).changed();
+                changed |= slider(ui, "Opacity", &mut style.opacity, 0.15..=1.0).changed();
+                changed |= slider(ui, "Tint R", &mut style.tint_r, 0.0..=1.5).changed();
+                changed |= slider(ui, "Tint G", &mut style.tint_g, 0.0..=1.5).changed();
+                changed |= slider(ui, "Tint B", &mut style.tint_b, 0.0..=1.5).changed();
+
+                let preview = logo_style_tint(style);
+                let (swatch, _) =
+                    ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), Sense::hover());
+                ui.painter().rect_filled(swatch, 3.0, preview);
+
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("White").clicked() {
+                        set_style_tint(style, 1.0, 1.0, 1.0, 1.0);
+                        changed = true;
+                    }
+                    if ui.button("Warm").clicked() {
+                        set_style_tint(style, 1.15, 0.95, 0.75, 1.05);
+                        changed = true;
+                    }
+                    if ui.button("Cool").clicked() {
+                        set_style_tint(style, 0.75, 0.95, 1.2, 1.05);
+                        changed = true;
+                    }
+                    if ui.button("Cyan").clicked() {
+                        set_style_tint(style, 0.45, 1.05, 1.25, 1.1);
+                        changed = true;
+                    }
+                    if ui.button("Magenta").clicked() {
+                        set_style_tint(style, 1.25, 0.45, 1.1, 1.1);
+                        changed = true;
+                    }
+                    if ui.button("Gold").clicked() {
+                        set_style_tint(style, 1.25, 0.95, 0.4, 1.1);
+                        changed = true;
+                    }
+                });
+
+                if app.logos.len() > 1 {
+                    ui.add_space(4.0);
+                    changed |= slider(ui, "Hold (sec)", &mut style.hold_secs, 0.0..=30.0)
+                        .on_hover_text("0 = use default hold")
+                        .changed();
+                }
+                changed |= ui
+                    .checkbox(&mut style.glitch_on_beat, "Beat glitch (this logo)")
+                    .changed();
+            }
+        }
+
         if changed {
             app.mark_settings_dirty();
         }
     });
 }
 
-fn set_logo_tint(s: &mut crate::config::StageSettings, r: f32, g: f32, b: f32, bright: f32) {
-    s.logo_tint_r = r;
-    s.logo_tint_g = g;
-    s.logo_tint_b = b;
-    s.logo_brightness = bright;
-    s.logo_opacity = 1.0;
+fn set_style_tint(s: &mut crate::config::LogoStyle, r: f32, g: f32, b: f32, bright: f32) {
+    s.tint_r = r;
+    s.tint_g = g;
+    s.tint_b = b;
+    s.brightness = bright;
+    s.opacity = 1.0;
 }
 
-fn logo_tint_color(s: &crate::config::StageSettings) -> Color32 {
-    let b = s.logo_brightness.clamp(0.0, 2.0);
-    let a = (s.logo_opacity.clamp(0.0, 1.0) * 255.0) as u8;
+fn logo_style_tint(s: &crate::config::LogoStyle) -> Color32 {
+    let b = s.brightness.clamp(0.0, 2.0);
+    let a = (s.opacity.clamp(0.0, 1.0) * 255.0) as u8;
     Color32::from_rgba_unmultiplied(
-        (s.logo_tint_r.clamp(0.0, 2.0) * b * 255.0).min(255.0) as u8,
-        (s.logo_tint_g.clamp(0.0, 2.0) * b * 255.0).min(255.0) as u8,
-        (s.logo_tint_b.clamp(0.0, 2.0) * b * 255.0).min(255.0) as u8,
+        (s.tint_r.clamp(0.0, 2.0) * b * 255.0).min(255.0) as u8,
+        (s.tint_g.clamp(0.0, 2.0) * b * 255.0).min(255.0) as u8,
+        (s.tint_b.clamp(0.0, 2.0) * b * 255.0).min(255.0) as u8,
         a,
     )
 }
@@ -750,24 +814,48 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
         draw_disc_ticks(&painter, center, disc_r, logo_angle);
     }
 
-    if let Some(ref logo) = app.logo {
+    if !app.logos.is_empty() {
+        let style = app.active_logo_style();
         let logo_center = egui::pos2(
-            center.x + stage.logo_offset_x * disc_r,
-            center.y + stage.logo_offset_y * disc_r,
+            center.x + style.offset_x * disc_r,
+            center.y + style.offset_y * disc_r,
         );
-        let logo_bounds = egui::Rect::from_center_size(
-            logo_center,
-            egui::vec2(disc_r * 2.0 * stage.logo_size, disc_r * 2.0 * stage.logo_size),
+        let cur_idx = app.logo_index.min(app.logos.len() - 1);
+        let from_idx = app.logo_from_index.min(app.logos.len() - 1);
+        let cur = &app.logos[cur_idx];
+        let logo_rect = fit_rect(
+            egui::Rect::from_center_size(
+                logo_center,
+                egui::vec2(disc_r * 2.0 * style.size, disc_r * 2.0 * style.size),
+            ),
+            cur.size,
         );
-        let logo_rect = fit_rect(logo_bounds, logo.size);
-        let tint = logo_tint_color(&stage);
-        paint_rotated_image(
-            &painter,
-            logo.texture.id(),
-            logo_rect,
-            logo_angle,
-            tint,
-        );
+        let tint = logo_style_tint(&style);
+        let switch_g = app.logo_switch_glitch_t * stage.logo_glitch_amount.clamp(0.0, 1.5);
+        let beat_g = app.logo_beat_glitch_t * stage.logo_beat_glitch_amount.clamp(0.0, 1.5);
+        let cur_tex = cur.texture.id();
+        let prev_tex = if from_idx != cur_idx {
+            Some(app.logos[from_idx].texture.id())
+        } else {
+            None
+        };
+        // Transition glitch first (shows previous logo tearing out).
+        // Beat glitch is standalone — only RGB-tears the current logo.
+        if switch_g > 0.04 {
+            paint_logo_glitch(
+                &painter,
+                cur_tex,
+                prev_tex,
+                logo_rect,
+                logo_angle,
+                tint,
+                switch_g,
+            );
+        } else if beat_g > 0.04 {
+            paint_logo_glitch(&painter, cur_tex, None, logo_rect, logo_angle, tint, beat_g);
+        } else {
+            paint_rotated_image(&painter, cur_tex, logo_rect, logo_angle, tint);
+        }
     }
 
     if app.show_fft_debug {
@@ -1037,6 +1125,112 @@ fn draw_ring_smooth(
             Stroke::new(1.0_f32, with_alpha(color, 230)),
         );
     }
+}
+
+fn paint_logo_glitch(
+    painter: &egui::Painter,
+    current: egui::TextureId,
+    previous: Option<egui::TextureId>,
+    rect: egui::Rect,
+    angle: f32,
+    tint: Color32,
+    amount: f32,
+) {
+    let a = amount.clamp(0.0, 1.5);
+    let shake = a * 14.0;
+    let seed = (a * 97.0 + rect.center().x * 0.01) as i32;
+
+    if let Some(prev) = previous {
+        let fade = (a * 180.0).min(160.0) as u8;
+        let ghost = Color32::from_rgba_unmultiplied(tint.r(), tint.g(), tint.b(), fade);
+        let jog = ((seed % 7) as f32 - 3.0) * shake * 0.35;
+        paint_rotated_image(
+            painter,
+            prev,
+            rect.translate(egui::vec2(jog, -jog * 0.4)),
+            angle,
+            ghost,
+        );
+    }
+
+    let ox = shake * 0.55;
+    let r_tint = Color32::from_rgba_unmultiplied(tint.r(), 0, 0, ((tint.a() as f32) * 0.55) as u8);
+    let g_tint = Color32::from_rgba_unmultiplied(0, tint.g(), 0, ((tint.a() as f32) * 0.55) as u8);
+    let b_tint = Color32::from_rgba_unmultiplied(0, 0, tint.b(), ((tint.a() as f32) * 0.55) as u8);
+    paint_rotated_image(
+        painter,
+        current,
+        rect.translate(egui::vec2(-ox, 0.0)),
+        angle,
+        r_tint,
+    );
+    paint_rotated_image(
+        painter,
+        current,
+        rect.translate(egui::vec2(0.0, ox * 0.25)),
+        angle,
+        g_tint,
+    );
+    paint_rotated_image(
+        painter,
+        current,
+        rect.translate(egui::vec2(ox, 0.0)),
+        angle,
+        b_tint,
+    );
+
+    let slices = 6;
+    for i in 0..slices {
+        let t0 = i as f32 / slices as f32;
+        let t1 = (i + 1) as f32 / slices as f32;
+        let band = egui::Rect::from_min_max(
+            egui::pos2(rect.left(), rect.top() + rect.height() * t0),
+            egui::pos2(rect.right(), rect.top() + rect.height() * t1),
+        );
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, t0), egui::pos2(1.0, t1));
+        let jog = (((seed + i * 13) % 11) as f32 - 5.0) * shake * 0.22;
+        let slice_rect = band.translate(egui::vec2(jog, 0.0));
+        let alpha =
+            ((tint.a() as f32) * (0.55 + 0.45 * (1.0 - a.min(1.0)))).clamp(40.0, 255.0) as u8;
+        let st = Color32::from_rgba_unmultiplied(tint.r(), tint.g(), tint.b(), alpha);
+        paint_image_uv(
+            painter,
+            current,
+            slice_rect,
+            uv,
+            angle,
+            rect.center(),
+            st,
+        );
+    }
+
+    let settle = ((1.0 - a.min(1.0)) * tint.a() as f32).clamp(0.0, 255.0) as u8;
+    if settle > 20 {
+        paint_rotated_image(
+            painter,
+            current,
+            rect,
+            angle,
+            Color32::from_rgba_unmultiplied(tint.r(), tint.g(), tint.b(), settle),
+        );
+    }
+}
+
+fn paint_image_uv(
+    painter: &egui::Painter,
+    texture: egui::TextureId,
+    rect: egui::Rect,
+    uv: egui::Rect,
+    angle: f32,
+    pivot: Pos2,
+    tint: Color32,
+) {
+    let mut mesh = Mesh::with_texture(texture);
+    mesh.add_rect_with_uv(rect, uv, tint);
+    if angle.abs() > 0.0001 {
+        mesh.rotate(egui::emath::Rot2::from_angle(angle), pivot);
+    }
+    painter.add(Shape::mesh(mesh));
 }
 
 fn paint_rotated_image(
