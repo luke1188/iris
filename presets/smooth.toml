@@ -1,0 +1,63 @@
+name = "smooth"
+
+[visualizer]
+style = "smooth"
+color_mode = "cyan"
+radius = 0.23
+thickness = 3.0
+sensitivity = 1.2
+smoothing = 0.55
+bass_response = 0.9
+mid_response = 1.05
+high_response = 1.1
+max_bar_length = 0.42
+glow = 0.7
+segment_count = 180
+
+[particles]
+enabled = false
+count = 700
+size = 2.0
+speed = 0.35
+gravity = 0.0
+opacity = 0.55
+lifetime = 2.4
+bass_reaction = 0.9
+beat_reaction = 1.0
+spread = 0.75
+glow = 0.4
+
+[beat]
+sensitivity = 1.1
+cooldown = 0.13
+kick_sensitivity = 0.95
+
+[colors]
+rgb_intensity = 0.9
+glow_intensity = 0.8
+
+[tuning]
+input_gain = 0.8
+threshold = 0.06
+bass_gain = 0.3
+low_mid_gain = 0.7
+mid_gain = 1.05
+high_mid_gain = 1.2
+high_gain = 1.3
+spectrum_bass_tilt = 0.4
+ceiling = 0.8
+attack = 0.28
+release = 0.18
+sensitivity = 1.15
+
+[stage]
+background_brightness = 0.82
+background_darkness = 0.52
+background_zoom = 1.06
+background_pan_x = 0.0
+background_pan_y = 0.0
+logo_size = 0.73
+disc_radius = 0.15
+logo_glow = 0.55
+bass_pulse = 0.07
+beat_pulse = 0.11

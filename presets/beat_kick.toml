@@ -1,0 +1,66 @@
+name = "beat_kick"
+
+[visualizer]
+style = "bars"
+color_mode = "rgb"
+radius = 0.22
+thickness = 2.0
+sensitivity = 1.35
+smoothing = 0.28
+bass_response = 1.1
+mid_response = 1.0
+high_response = 1.0
+max_bar_length = 0.55
+glow = 0.45
+segment_count = 256
+
+[particles]
+enabled = false
+count = 800
+size = 2.0
+speed = 0.4
+gravity = 0.0
+opacity = 0.6
+lifetime = 2.2
+bass_reaction = 0.8
+beat_reaction = 1.5
+spread = 0.8
+glow = 0.35
+
+[beat]
+sensitivity = 2.1
+cooldown = 0.11
+kick_sensitivity = 1.8
+mode = "kick_only"
+bass_weight = 1.2
+rms_weight = 0.0
+
+[colors]
+rgb_intensity = 1.0
+glow_intensity = 0.55
+
+[tuning]
+input_gain = 0.8
+threshold = 0.06
+bass_gain = 0.28
+low_mid_gain = 0.7
+mid_gain = 1.0
+high_mid_gain = 1.15
+high_gain = 1.25
+spectrum_bass_tilt = 0.4
+ceiling = 0.8
+attack = 0.3
+release = 0.14
+sensitivity = 1.2
+
+[stage]
+background_brightness = 0.82
+background_darkness = 0.52
+background_zoom = 1.05
+background_pan_x = 0.0
+background_pan_y = 0.0
+logo_size = 0.72
+disc_radius = 0.14
+logo_glow = 0.0
+bass_pulse = 0.05
+beat_pulse = 0.22

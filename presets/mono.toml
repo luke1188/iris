@@ -1,0 +1,63 @@
+name = "mono"
+
+[visualizer]
+style = "bars"
+color_mode = "mono"
+radius = 0.22
+thickness = 2.0
+sensitivity = 1.25
+smoothing = 0.38
+bass_response = 0.95
+mid_response = 1.0
+high_response = 1.0
+max_bar_length = 0.34
+glow = 0.25
+segment_count = 220
+
+[particles]
+enabled = false
+count = 600
+size = 1.8
+speed = 0.3
+gravity = 0.0
+opacity = 0.5
+lifetime = 2.0
+bass_reaction = 0.8
+beat_reaction = 0.9
+spread = 0.7
+glow = 0.15
+
+[beat]
+sensitivity = 1.15
+cooldown = 0.14
+kick_sensitivity = 1.0
+
+[colors]
+rgb_intensity = 0.4
+glow_intensity = 0.3
+
+[tuning]
+input_gain = 0.85
+threshold = 0.05
+bass_gain = 0.35
+low_mid_gain = 0.75
+mid_gain = 1.0
+high_mid_gain = 1.1
+high_gain = 1.2
+spectrum_bass_tilt = 0.45
+ceiling = 0.85
+attack = 0.3
+release = 0.15
+sensitivity = 1.15
+
+[stage]
+background_brightness = 0.8
+background_darkness = 0.55
+background_zoom = 1.04
+background_pan_x = 0.0
+background_pan_y = 0.0
+logo_size = 0.74
+disc_radius = 0.145
+logo_glow = 0.2
+bass_pulse = 0.06
+beat_pulse = 0.1

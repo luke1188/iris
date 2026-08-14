@@ -1,0 +1,63 @@
+name = "default"
+
+[visualizer]
+style = "bars"
+color_mode = "rgb"
+radius = 0.22
+thickness = 2.0
+sensitivity = 1.4
+smoothing = 0.35
+bass_response = 1.2
+mid_response = 1.0
+high_response = 0.9
+max_bar_length = 0.35
+glow = 0.5
+segment_count = 256
+
+[particles]
+enabled = false
+count = 1000
+size = 2.0
+speed = 0.4
+gravity = 0.0
+opacity = 0.7
+lifetime = 2.5
+bass_reaction = 1.0
+beat_reaction = 1.2
+spread = 0.8
+glow = 0.4
+
+[beat]
+sensitivity = 1.2
+cooldown = 0.12
+kick_sensitivity = 1.0
+
+[colors]
+rgb_intensity = 1.0
+glow_intensity = 0.6
+
+[tuning]
+input_gain = 0.85
+threshold = 0.04
+bass_gain = 0.35
+low_mid_gain = 0.75
+mid_gain = 1.0
+high_mid_gain = 1.15
+high_gain = 1.25
+spectrum_bass_tilt = 0.45
+ceiling = 0.85
+attack = 0.32
+release = 0.14
+sensitivity = 1.2
+
+[stage]
+background_brightness = 0.85
+background_darkness = 0.45
+background_zoom = 1.05
+background_pan_x = 0.0
+background_pan_y = 0.0
+logo_size = 0.72
+disc_radius = 0.14
+logo_glow = 0.35
+bass_pulse = 0.08
+beat_pulse = 0.12
