@@ -22,13 +22,13 @@ jobs:
           - name: Windows x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: live_visualizer-windows-x64
-            binary: live_visualizer.exe
+            artifact: iris_visualizer-windows-x64
+            binary: iris_visualizer.exe
           - name: macOS Apple Silicon
             os: macos-14
             target: aarch64-apple-darwin
-            artifact: live_visualizer-macos-aarch64
-            binary: live_visualizer
+            artifact: iris_visualizer-macos-aarch64
+            binary: iris_visualizer
 
     steps:
       - name: Checkout
@@ -51,9 +51,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          bin="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          if [ ! -f "$bin" ]; then
+            echo "Missing binary at $bin"
+            ls -la "target/${{ matrix.target }}/release/" || true
+            exit 1
+          fi
           staging="dist/${{ matrix.artifact }}"
           mkdir -p "$staging"
-          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "$staging/"
+          cp "$bin" "$staging/"
           chmod +x "$staging/${{ matrix.binary }}" || true
           cp -R presets "$staging/presets"
           if [ -d assets ]; then
