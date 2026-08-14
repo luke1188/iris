@@ -383,7 +383,6 @@ impl LiveVisualizerApp {
         }
     }
 
-    /// Current draw angle for the logo (radians), including wobble/pendulum.
     pub fn logo_draw_angle(&self) -> f32 {
         let stage = &self.settings.stage;
         let amount = stage.logo_motion_amount.clamp(0.0, 1.0);

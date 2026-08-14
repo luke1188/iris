@@ -28,6 +28,17 @@ pub enum SpectrumStyle {
     SoftGlow,
 }
 
+/// How the spectrum is laid out around the disc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SpectrumLayout {
+    /// Full circle, bass → highs.
+    #[default]
+    Full,
+    /// Lows / mids / highs mirrored on the left and right (no bass on the ring).
+    Split,
+}
+
 /// Motion applied to the center logo / disc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -190,6 +201,8 @@ pub struct VisualizerSettings {
     pub style: SpectrumStyle,
     #[serde(default)]
     pub color_mode: ColorMode,
+    #[serde(default)]
+    pub layout: SpectrumLayout,
     pub radius: f32,
     pub thickness: f32,
     pub sensitivity: f32,
@@ -200,6 +213,9 @@ pub struct VisualizerSettings {
     pub max_bar_length: f32,
     pub glow: f32,
     pub segment_count: u32,
+    /// How tall the mirrored bass “ear” spikes are in Split layout.
+    #[serde(default = "default_ear_gain")]
+    pub ear_gain: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,6 +237,10 @@ pub struct ParticleSettings {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_ear_gain() -> f32 {
+    1.45
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,6 +274,7 @@ impl Default for VisualizerSettings {
         Self {
             style: SpectrumStyle::Bars,
             color_mode: ColorMode::Rgb,
+            layout: SpectrumLayout::Full,
             radius: 0.22,
             thickness: 2.0,
             sensitivity: 1.4,
@@ -264,6 +285,7 @@ impl Default for VisualizerSettings {
             max_bar_length: 0.55,
             glow: 0.5,
             segment_count: 256,
+            ear_gain: 1.45,
         }
     }
 }

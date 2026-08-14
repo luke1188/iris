@@ -2,7 +2,7 @@
 
 use super::media::{cover_rect, fit_rect};
 use super::state::LiveVisualizerApp;
-use crate::config::{BeatSettings, BeatMode, ColorMode, LogoMotion, SpectrumStyle};
+use crate::config::{BeatSettings, BeatMode, ColorMode, LogoMotion, SpectrumLayout, SpectrumStyle};
 use egui::epaint::Mesh;
 use egui::{self, Color32, Pos2, RichText, Sense, Shape, Stroke};
 
@@ -367,6 +367,24 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                     .selectable_value(&mut v.style, SpectrumStyle::SoftGlow, "Glow")
                     .changed();
             });
+            ui.label(RichText::new("Layout").small().strong());
+            ui.horizontal_wrapped(|ui| {
+                changed |= ui
+                    .selectable_value(&mut v.layout, SpectrumLayout::Full, "Full circle")
+                    .changed();
+                changed |= ui
+                    .selectable_value(&mut v.layout, SpectrumLayout::Split, "Split L/R")
+                    .on_hover_text(
+                        "Mirrored circle: bass/sub as two ear spikes, mids/highs complete the ring",
+                    )
+                    .changed();
+            });
+            if v.layout == SpectrumLayout::Split {
+                changed |= slider(ui, "Bass ears", &mut v.ear_gain, 0.4..=2.4)
+                    .on_hover_text("How far the left/right bass spikes stick out")
+                    .changed();
+            }
+            ui.add_space(4.0);
             ui.label(RichText::new("Color").small().strong());
             ui.horizontal_wrapped(|ui| {
                 for (mode, label) in [
@@ -787,8 +805,6 @@ fn draw_spectrum(
         return;
     }
 
-    // Light neighbor blend only — don't erase frequency peaks.
-    // Extra-light in the bass third so low / low-mid keep their shape.
     let n = spectrum.len();
     let mut smoothed = spectrum.clone();
     let smooth_amt = (vis.smoothing * 0.32).clamp(0.0, 0.4);
@@ -806,83 +822,220 @@ fn draw_spectrum(
     }
 
     let base_r = disc_r + 4.0;
-    // Hard cap: bars stay short and clean relative to the logo disc / frame.
-    let max_len = (disc_r * vis.max_bar_length.clamp(0.15, 1.0))
+    let mut max_len = (disc_r * vis.max_bar_length.clamp(0.15, 1.0))
         .min(min_dim * 0.16)
         .min(disc_r * 1.05)
         .max(8.0);
+    if vis.layout == SpectrumLayout::Split {
+        max_len *= 1.28;
+    }
     let thickness = vis.thickness.clamp(0.8, 4.0);
     let intensity = 0.9 * app_color_intensity(vis);
     let glow = vis.glow * 0.4;
+    let pts = collect_ring_points(&smoothed, vis, features);
 
     match vis.style {
         SpectrumStyle::Bars => {
-            for (i, &mag) in smoothed.iter().enumerate() {
-                let t = (i as f32 + 0.5) / n as f32;
-                let angle = t * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-                let (s, c) = angle.sin_cos();
-                let len = mag.clamp(0.0, 1.0) * max_len;
-                let inner = Pos2::new(center.x + c * base_r, center.y + s * base_r);
-                let outer = Pos2::new(center.x + c * (base_r + len), center.y + s * (base_r + len));
-                let color = spectrum_color(t, intensity, vis.color_mode);
-                if glow > 0.05 {
-                    let gc = with_alpha(color, (36.0 * glow) as u8);
-                    painter.line_segment([inner, outer], Stroke::new(thickness * 1.5, gc));
-                }
-                painter.line_segment([inner, outer], Stroke::new(thickness, color));
-            }
+            draw_ring_bars(
+                painter,
+                center,
+                base_r,
+                max_len,
+                thickness,
+                glow,
+                intensity,
+                vis.color_mode,
+                &pts,
+            );
         }
         SpectrumStyle::Smooth | SpectrumStyle::SoftGlow => {
-            for i in 0..n {
-                let i1 = (i + 1) % n;
-                // When wrapping to index 0, treat hue as 1.0 not 0.0,
-                // otherwise the top seam averages to ~0.5 (cyan).
-                let t0 = i as f32 / n as f32;
-                let t1 = if i1 == 0 { 1.0 } else { i1 as f32 / n as f32 };
-                let a0 = t0 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-                let a1 = t1 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-                let (s0, c0) = a0.sin_cos();
-                let (s1, c1) = a1.sin_cos();
-                let len0 = smoothed[i].clamp(0.0, 1.0) * max_len;
-                let len1 = smoothed[i1].clamp(0.0, 1.0) * max_len;
-                let inner0 = Pos2::new(center.x + c0 * base_r, center.y + s0 * base_r);
-                let inner1 = Pos2::new(center.x + c1 * base_r, center.y + s1 * base_r);
-                let outer0 =
-                    Pos2::new(center.x + c0 * (base_r + len0), center.y + s0 * (base_r + len0));
-                let outer1 =
-                    Pos2::new(center.x + c1 * (base_r + len1), center.y + s1 * (base_r + len1));
-                let t = (t0 + t1) * 0.5;
-                let color = spectrum_color(t, intensity, vis.color_mode);
-
-                if matches!(vis.style, SpectrumStyle::SoftGlow) && glow > 0.05 {
-                    let gc = with_alpha(color, (32.0 * glow) as u8);
-                    let outer0g = Pos2::new(
-                        center.x + c0 * (base_r + len0 * 1.04),
-                        center.y + s0 * (base_r + len0 * 1.04),
-                    );
-                    let outer1g = Pos2::new(
-                        center.x + c1 * (base_r + len1 * 1.04),
-                        center.y + s1 * (base_r + len1 * 1.04),
-                    );
-                    painter.add(Shape::convex_polygon(
-                        vec![inner0, outer0g, outer1g, inner1],
-                        gc,
-                        Stroke::NONE,
-                    ));
-                }
-
-                let fill = with_alpha(color, 215);
-                painter.add(Shape::convex_polygon(
-                    vec![inner0, outer0, outer1, inner1],
-                    fill,
-                    Stroke::NONE,
-                ));
-                painter.line_segment(
-                    [outer0, outer1],
-                    Stroke::new(1.0_f32, with_alpha(color, 230)),
-                );
-            }
+            draw_ring_smooth(
+                painter,
+                center,
+                base_r,
+                max_len,
+                glow,
+                intensity,
+                vis.color_mode,
+                matches!(vis.style, SpectrumStyle::SoftGlow),
+                vis.layout == SpectrumLayout::Full,
+                &pts,
+            );
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SpecPoint {
+    t: f32,
+    mag: f32,
+    hue: f32,
+}
+
+fn collect_ring_points(
+    smoothed: &[f32],
+    vis: &crate::config::VisualizerSettings,
+    features: &crate::audio::AudioFeatures,
+) -> Vec<SpecPoint> {
+    let n = smoothed.len().max(8);
+    match vis.layout {
+        SpectrumLayout::Full => (0..n)
+            .map(|i| {
+                let t = (i as f32 + 0.5) / n as f32;
+                SpecPoint {
+                    t,
+                    mag: smoothed[i].clamp(0.0, 1.2),
+                    hue: t,
+                }
+            })
+            .collect(),
+        SpectrumLayout::Split => {
+            // Full mirrored circle: lows at the bottom, highs toward the top,
+            // bass/sub as ear lobes at ~2 o'clock and 10 o'clock.
+            let cut = ((n as f32) * 0.20) as usize;
+            let rest = (n - cut).max(8);
+            let ear_gain = vis.ear_gain.clamp(0.2, 2.8);
+            let punch = (features.bass * 0.55 + features.kick * 0.95).min(1.25);
+            (0..n)
+                .map(|i| {
+                    let t = (i as f32 + 0.5) / n as f32;
+                    let u = if t <= 0.5 { t * 2.0 } else { (1.0 - t) * 2.0 };
+                    SpecPoint {
+                        t,
+                        mag: trap_nation_mag(smoothed, cut, rest, u, punch, ear_gain),
+                        hue: (0.06 + u * 0.82).clamp(0.0, 1.0),
+                    }
+                })
+                .collect()
+        }
+    }
+}
+
+fn trap_nation_mag(
+    smoothed: &[f32],
+    cut: usize,
+    rest: usize,
+    u: f32,
+    punch: f32,
+    ear_gain: f32,
+) -> f32 {
+    // Ear peak ~36° off 12 o'clock → 2 o'clock / 10 o'clock.
+    let ear_c = 0.20_f32;
+    let ear_w = 0.075_f32;
+    let x = (u - ear_c) / ear_w;
+    let ear = (-x * x * 2.1).exp();
+
+    let bass_u = ((u - (ear_c - ear_w * 2.2)) / (ear_w * 4.4)).clamp(0.0, 1.0);
+    let bass_tex = interp_spec(smoothed, bass_u * (cut.saturating_sub(1) as f32));
+    let ear_mag = (bass_tex * 0.62 + punch * 0.72) * ear * ear_gain;
+
+    let body = interp_spec(smoothed, cut as f32 + u * (rest.saturating_sub(1) as f32));
+    let body = body * (1.0 - ear * 0.62);
+
+    (ear_mag + body).clamp(0.0, 1.45)
+}
+
+fn interp_spec(s: &[f32], idx: f32) -> f32 {
+    if s.is_empty() {
+        return 0.0;
+    }
+    let max_i = (s.len() - 1) as f32;
+    let idx = idx.clamp(0.0, max_i);
+    let i = idx.floor() as usize;
+    let f = idx - i as f32;
+    let a = s[i];
+    let b = s.get(i + 1).copied().unwrap_or(a);
+    a * (1.0 - f) + b * f
+}
+
+fn ring_angle(t: f32) -> f32 {
+    t * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2
+}
+
+fn ring_pos(center: Pos2, t: f32, radius: f32) -> Pos2 {
+    let (s, c) = ring_angle(t).sin_cos();
+    Pos2::new(center.x + c * radius, center.y + s * radius)
+}
+
+fn draw_ring_bars(
+    painter: &egui::Painter,
+    center: Pos2,
+    base_r: f32,
+    max_len: f32,
+    thickness: f32,
+    glow: f32,
+    intensity: f32,
+    mode: ColorMode,
+    pts: &[SpecPoint],
+) {
+    for p in pts {
+        let len = p.mag.clamp(0.0, 1.45) * max_len;
+        let inner = ring_pos(center, p.t, base_r);
+        let outer = ring_pos(center, p.t, base_r + len);
+        let color = spectrum_color(p.hue, intensity, mode);
+        if glow > 0.05 {
+            painter.line_segment(
+                [inner, outer],
+                Stroke::new(thickness * 1.5, with_alpha(color, (36.0 * glow) as u8)),
+            );
+        }
+        painter.line_segment([inner, outer], Stroke::new(thickness, color));
+    }
+}
+
+fn draw_ring_smooth(
+    painter: &egui::Painter,
+    center: Pos2,
+    base_r: f32,
+    max_len: f32,
+    glow: f32,
+    intensity: f32,
+    mode: ColorMode,
+    soft_glow: bool,
+    rainbow_wrap: bool,
+    pts: &[SpecPoint],
+) {
+    if pts.len() < 2 {
+        return;
+    }
+    for i in 0..pts.len() {
+        let a = pts[i];
+        let b = pts[(i + 1) % pts.len()];
+        let len0 = a.mag.clamp(0.0, 1.45) * max_len;
+        let len1 = b.mag.clamp(0.0, 1.45) * max_len;
+        let inner0 = ring_pos(center, a.t, base_r);
+        let inner1 = ring_pos(center, b.t, base_r);
+        let outer0 = ring_pos(center, a.t, base_r + len0);
+        let outer1 = ring_pos(center, b.t, base_r + len1);
+        let hue = if rainbow_wrap && i + 1 == pts.len() {
+            1.0
+        } else {
+            (a.hue + b.hue) * 0.5
+        };
+        let color = spectrum_color(hue, intensity, mode);
+
+        if soft_glow && glow > 0.05 {
+            let gc = with_alpha(color, (32.0 * glow) as u8);
+            painter.add(Shape::convex_polygon(
+                vec![
+                    inner0,
+                    ring_pos(center, a.t, base_r + len0 * 1.04),
+                    ring_pos(center, b.t, base_r + len1 * 1.04),
+                    inner1,
+                ],
+                gc,
+                Stroke::NONE,
+            ));
+        }
+        painter.add(Shape::convex_polygon(
+            vec![inner0, outer0, outer1, inner1],
+            with_alpha(color, 215),
+            Stroke::NONE,
+        ));
+        painter.line_segment(
+            [outer0, outer1],
+            Stroke::new(1.0_f32, with_alpha(color, 230)),
+        );
     }
 }
 
