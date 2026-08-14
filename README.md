@@ -18,6 +18,8 @@ macOS / Linux can build for development; WASAPI loopback notes below apply to Wi
 cargo run --release
 ```
 
+GitHub Actions builds **Windows x64**, **macOS Apple Silicon**, and **macOS Intel** release zips on pushes/PRs to `main` (Artifacts) and attaches them to GitHub Releases when you push a `v*` tag (e.g. `v0.1.0`).
+
 If a previous run left the process hung (audio device busy), force-quit it first, then relaunch. Closing the window now releases the audio device on exit.
 
 ### Presets
