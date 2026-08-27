@@ -160,7 +160,12 @@ impl ParticleSystem {
         });
     }
 
-    pub fn draw(&self, painter: &egui::Painter, color_mode: crate::config::ColorMode) {
+    pub fn draw(
+        &self,
+        painter: &egui::Painter,
+        color_mode: crate::config::ColorMode,
+        colors: &crate::config::ColorSettings,
+    ) {
         if !self.settings.enabled {
             return;
         }
@@ -173,7 +178,7 @@ impl ParticleSystem {
             if a < 8 {
                 continue;
             }
-            let color = particle_color(p.hue, t, a, color_mode);
+            let color = particle_color(p.hue, t, a, color_mode, colors);
             let pos = Pos2::new(p.x, p.y);
             let r = (p.size * (0.45 + 0.4 * t)).clamp(0.6, 4.5);
 
@@ -191,49 +196,18 @@ impl ParticleSystem {
     }
 }
 
-fn particle_color(hue: f32, life_t: f32, alpha: u8, mode: crate::config::ColorMode) -> Color32 {
-    match mode {
-        crate::config::ColorMode::Rgb => {
-            let (r, g, b) = hsv(hue * 360.0, 0.9, 0.55 + 0.45 * life_t);
-            Color32::from_rgba_unmultiplied(
-                (r * 255.0) as u8,
-                (g * 255.0) as u8,
-                (b * 255.0) as u8,
-                alpha,
-            )
-        }
-        crate::config::ColorMode::Mono => {
-            let v = (180.0 + 75.0 * life_t) as u8;
-            Color32::from_rgba_unmultiplied(v, v, v, alpha)
-        }
-        crate::config::ColorMode::Cyan => {
-            Color32::from_rgba_unmultiplied(40, 220, 255, alpha)
-        }
-        crate::config::ColorMode::Amber => {
-            Color32::from_rgba_unmultiplied(255, 170, 60, alpha)
-        }
-        crate::config::ColorMode::Magenta => {
-            Color32::from_rgba_unmultiplied(255, 70, 180, alpha)
-        }
-    }
-}
-
-fn hsv(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
-    let c = v * s;
-    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
-    let m = v - c;
-    let (r, g, b) = if h < 60.0 {
-        (c, x, 0.0)
-    } else if h < 120.0 {
-        (x, c, 0.0)
-    } else if h < 180.0 {
-        (0.0, c, x)
-    } else if h < 240.0 {
-        (0.0, x, c)
-    } else if h < 300.0 {
-        (x, 0.0, c)
-    } else {
-        (c, 0.0, x)
-    };
-    (r + m, g + m, b + m)
+fn particle_color(
+    hue: f32,
+    life_t: f32,
+    alpha: u8,
+    mode: crate::config::ColorMode,
+    colors: &crate::config::ColorSettings,
+) -> Color32 {
+    let rgb = colors.sample(mode, hue, 0.7 + 0.3 * life_t);
+    Color32::from_rgba_unmultiplied(
+        (rgb.r * 255.0) as u8,
+        (rgb.g * 255.0) as u8,
+        (rgb.b * 255.0) as u8,
+        alpha,
+    )
 }

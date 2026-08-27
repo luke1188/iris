@@ -52,7 +52,12 @@ pub struct LiveVisualizerApp {
     pub particles: ParticleSystem,
     pub preset_names: Vec<String>,
     pub preset_save_name: String,
+    /// Session settings need writing to settings.toml.
     pub settings_dirty: bool,
+    /// Working look differs from the last loaded/saved named preset.
+    pub preset_dirty: bool,
+    /// Pending preset load that needs a second click to discard edits.
+    pub pending_preset_load: Option<String>,
     pub shutting_down: bool,
     /// Accumulated logo rotation angle (radians).
     pub logo_angle: f32,
@@ -141,6 +146,8 @@ impl LiveVisualizerApp {
             preset_names,
             preset_save_name,
             settings_dirty: false,
+            preset_dirty: false,
+            pending_preset_load: None,
             shutting_down: false,
             logo_angle: 0.0,
             logo_motion_phase: 0.0,
@@ -206,15 +213,30 @@ impl LiveVisualizerApp {
 
     pub fn mark_settings_dirty(&mut self) {
         self.settings_dirty = true;
+        self.preset_dirty = true;
+        self.pending_preset_load = None;
         self.settings.tuning = self.analyzer.tuning.clone();
     }
 
     pub fn apply_tuning_from_ui(&mut self) {
         self.settings.tuning = self.analyzer.tuning.clone();
         self.settings_dirty = true;
+        self.preset_dirty = true;
+        self.pending_preset_load = None;
     }
 
     pub fn apply_preset_by_name(&mut self, name: &str) {
+        if self.preset_dirty {
+            if self.pending_preset_load.as_deref() != Some(name) {
+                self.pending_preset_load = Some(name.to_string());
+                self.status_message = Some(format!(
+                    "Unsaved preset edits — Save first, or click '{name}' again to discard"
+                ));
+                return;
+            }
+        }
+        self.pending_preset_load = None;
+
         match load_preset(name) {
             Ok(preset) => {
                 self.settings.apply_preset(&preset);
@@ -222,7 +244,9 @@ impl LiveVisualizerApp {
                 self.analyzer.beat_mut().apply_settings(&self.settings.beat);
                 self.particles.set_settings(self.settings.particles.clone());
                 self.preset_save_name = name.to_string();
-                self.mark_settings_dirty();
+                self.preset_dirty = false;
+                // Persist session (which preset is active) without marking the preset dirty.
+                self.settings_dirty = true;
                 self.error_message = None;
                 self.status_message = Some(format!("Loaded preset '{name}'"));
                 log::info!("Loaded preset '{name}'");
@@ -237,12 +261,18 @@ impl LiveVisualizerApp {
     pub fn save_current_preset(&mut self) {
         let name = sanitize_preset_name(&self.preset_save_name);
         self.preset_save_name = name.clone();
+        if name.is_empty() {
+            self.error_message = Some("Enter a preset name before saving".into());
+            return;
+        }
         let preset = self.settings.to_preset(&name);
         match save_preset(&preset) {
             Ok(path) => {
                 self.settings.last_preset = Some(name.clone());
                 self.preset_names = list_presets();
-                self.mark_settings_dirty();
+                self.preset_dirty = false;
+                self.pending_preset_load = None;
+                self.settings_dirty = true;
                 self.error_message = None;
                 self.status_message = Some(format!("Saved preset '{name}' → {}", path.display()));
                 log::info!("Saved preset to {}", path.display());
@@ -260,7 +290,7 @@ impl LiveVisualizerApp {
 
     pub fn pick_background(&mut self, ctx: &egui::Context) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp"])
+            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "svg", "svgz"])
             .set_title("Select background image")
             .pick_file()
         {
@@ -272,7 +302,7 @@ impl LiveVisualizerApp {
 
     pub fn pick_logo(&mut self, ctx: &egui::Context) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp"])
+            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "svg", "svgz"])
             .set_title("Add logo / artwork")
             .pick_file()
         {
@@ -284,7 +314,7 @@ impl LiveVisualizerApp {
 
     pub fn pick_logos(&mut self, ctx: &egui::Context) {
         let paths = rfd::FileDialog::new()
-            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp"])
+            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "svg", "svgz"])
             .set_title("Add logos (multi-select)")
             .pick_files();
         if let Some(paths) = paths {

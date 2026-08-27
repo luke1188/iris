@@ -2,7 +2,9 @@
 
 use super::media::{cover_rect, fit_rect};
 use super::state::LiveVisualizerApp;
-use crate::config::{BeatSettings, BeatMode, ColorMode, LogoMotion, SpectrumLayout, SpectrumStyle};
+use crate::config::{
+    BeatSettings, ColorMode, ColorSettings, LogoMotion, RgbColor, SpectrumLayout, SpectrumStyle,
+};
 use egui::epaint::Mesh;
 use egui::{self, Color32, Pos2, RichText, Sense, Shape, Stroke};
 
@@ -61,7 +63,7 @@ pub fn draw_settings_contents(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
         .show(ui, |ui| {
             match app.controls_tab {
                 0 => {
-                    section_hint(ui, "Audio input, levels, and beat bounce");
+                    section_hint(ui, "Pick an input, watch levels, tune the bounce");
                     draw_audio_section(ui, app);
                     ui.add_space(8.0);
                     draw_levels_section(ui, app);
@@ -77,7 +79,7 @@ pub fn draw_settings_contents(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                     draw_visualizer_section(ui, app);
                 }
                 2 => {
-                    section_hint(ui, "Per-band gains for loud rooms");
+                    section_hint(ui, "Gain & band balance for the room");
                     draw_tuning_section(ui, app);
                 }
                 _ => {
@@ -118,18 +120,28 @@ fn draw_presets_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
             if ui.button("Refresh").on_hover_text("Reload presets folder").clicked() {
                 app.refresh_presets();
             }
+            let active = match (
+                app.settings.last_preset.as_deref(),
+                app.preset_dirty,
+            ) {
+                (Some(name), true) => format!("{name} · edited"),
+                (Some(name), false) => name.to_string(),
+                (None, true) => "session · unsaved".into(),
+                (None, false) => "none".into(),
+            };
             ui.label(
-                RichText::new(format!(
-                    "Active: {}",
-                    app.settings.last_preset.as_deref().unwrap_or("none")
-                ))
-                .small()
-                .color(Color32::GRAY),
+                RichText::new(format!("Active: {active}"))
+                    .small()
+                    .color(if app.preset_dirty {
+                        Color32::from_rgb(255, 190, 80)
+                    } else {
+                        Color32::GRAY
+                    }),
             );
         });
         ui.label(
             RichText::new(format!(
-                "Saves to: {}",
+                "Session autosaves · presets only when you click Save → {}",
                 crate::config::presets_dir().display()
             ))
             .small()
@@ -138,13 +150,20 @@ fn draw_presets_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
 
         ui.add_space(4.0);
         let names = app.preset_names.clone();
+        let pending = app.pending_preset_load.clone();
         egui::Grid::new("preset_grid")
             .num_columns(2)
             .spacing([8.0, 4.0])
             .show(ui, |ui| {
                 for name in &names {
-                    let selected = app.settings.last_preset.as_deref() == Some(name.as_str());
-                    if ui.selectable_label(selected, name).clicked() {
+                    let selected = !app.preset_dirty
+                        && app.settings.last_preset.as_deref() == Some(name.as_str());
+                    let label = if pending.as_deref() == Some(name.as_str()) {
+                        format!("{name}  (click again)")
+                    } else {
+                        name.clone()
+                    };
+                    if ui.selectable_label(selected, label).clicked() {
                         app.apply_preset_by_name(name);
                     }
                     ui.end_row();
@@ -155,7 +174,16 @@ fn draw_presets_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
         ui.horizontal(|ui| {
             ui.label("Save as");
             ui.text_edit_singleline(&mut app.preset_save_name);
-            if ui.button("Save").clicked() {
+            let save_label = if app.preset_names.iter().any(|n| n == &app.preset_save_name) {
+                "Overwrite"
+            } else {
+                "Save"
+            };
+            if ui
+                .button(save_label)
+                .on_hover_text("Writes a named preset file (session already autosaves)")
+                .clicked()
+            {
                 app.save_current_preset();
             }
         });
@@ -171,56 +199,71 @@ fn draw_beat_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Beat / bounce", true, |ui| {
         level_bar(ui, "Beat", app.features.beat, Color32::from_rgb(255, 100, 255));
         level_bar(ui, "Kick", app.features.kick, Color32::from_rgb(255, 70, 140));
-        ui.add_space(4.0);
-
-        let mut changed = false;
-        {
-            let b = &mut app.settings.beat;
-            ui.label(
-                RichText::new("Kick only = drums. Bass level = 808 sustain too.")
-                    .small()
-                    .color(Color32::GRAY),
-            );
-            ui.horizontal_wrapped(|ui| {
-                for (mode, label) in [
-                    (BeatMode::BassKick, "Bass kick"),
-                    (BeatMode::BassLevel, "Bass level"),
-                    (BeatMode::KickOnly, "Kick only"),
-                    (BeatMode::FullMix, "Full mix"),
-                ] {
-                    changed |= ui.selectable_value(&mut b.mode, mode, label).changed();
-                }
-            });
-            ui.add_space(4.0);
-            changed |= slider(ui, "Sensitivity", &mut b.sensitivity, 0.4..=3.5).changed();
-            changed |= slider(ui, "Kick punch", &mut b.kick_sensitivity, 0.3..=3.0).changed();
-            changed |= slider(ui, "Bass weight", &mut b.bass_weight, 0.0..=2.5).changed();
-            changed |= slider(ui, "RMS weight", &mut b.rms_weight, 0.0..=2.0).changed();
-            changed |= slider(ui, "Cooldown", &mut b.cooldown, 0.16..=0.4).changed();
-        }
-
         ui.add_space(6.0);
+
         ui.label(RichText::new("Quick setups").small().strong());
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Bass only").clicked() {
+            if ui
+                .button("Bass kick")
+                .on_hover_text("Kick hits with bass weight — good default for most tracks")
+                .clicked()
+            {
                 app.apply_beat_preset(BeatSettings::preset_bass_only());
             }
-            if ui.button("Kick only").clicked() {
+            if ui
+                .button("Kick only")
+                .on_hover_text("Strict drum kicks — ignores sustained 808 rumble")
+                .clicked()
+            {
                 app.apply_beat_preset(BeatSettings::preset_kick_only());
             }
-            if ui.button("Bass level").clicked() {
+            if ui
+                .button("Bass level")
+                .on_hover_text("Follows bass energy (sustains + kicks) — great for 808s")
+                .clicked()
+            {
                 app.apply_beat_preset(BeatSettings::preset_bass_level());
             }
-            if ui.button("Sensitive").clicked() {
+            if ui
+                .button("Sensitive")
+                .on_hover_text("Fires more easily — quieter rooms / soft kicks")
+                .clicked()
+            {
                 app.apply_beat_preset(BeatSettings::preset_sensitive());
             }
-            if ui.button("Tight").clicked() {
+            if ui
+                .button("Tight")
+                .on_hover_text("Fewer hits, longer cooldown — busy tracks / loud clubs")
+                .clicked()
+            {
                 app.apply_beat_preset(BeatSettings::preset_tight());
             }
         });
+
+        ui.add_space(6.0);
+        let mut changed = false;
+        {
+            let b = &mut app.settings.beat;
+            changed |= slider(ui, "Sensitivity", &mut b.sensitivity, 0.4..=3.5)
+                .on_hover_text("Overall beat threshold")
+                .changed();
+            changed |= slider(ui, "Kick punch", &mut b.kick_sensitivity, 0.3..=3.0)
+                .on_hover_text("How hard kick attacks need to hit")
+                .changed();
+            changed |= slider(ui, "Bass weight", &mut b.bass_weight, 0.0..=2.5)
+                .on_hover_text("How much bass energy feeds the bounce")
+                .changed();
+            changed |= slider(ui, "RMS weight", &mut b.rms_weight, 0.0..=2.0)
+                .on_hover_text("Overall loudness contribution (usually leave low)")
+                .changed();
+            changed |= slider(ui, "Cooldown", &mut b.cooldown, 0.16..=0.4)
+                .on_hover_text("Minimum time between beat pulses")
+                .changed();
+        }
+
         if ui
-            .button("Reset kick bounce")
-            .on_hover_text("Sets Bass bounce / Beat bounce to values that read on a kick")
+            .button("Reset disc bounce")
+            .on_hover_text("Restores Bass bounce / Beat bounce on the logo disc")
             .clicked()
         {
             app.settings.stage.bass_pulse = 0.12;
@@ -298,7 +341,7 @@ fn draw_audio_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
 fn draw_tuning_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Band gains", true, |ui| {
         ui.label(
-            RichText::new("Loud bar tip: raise Threshold, lower Bass")
+            RichText::new("Too hot? Raise Threshold · lower Bass")
                 .small()
                 .color(Color32::GRAY),
         );
@@ -317,7 +360,9 @@ fn draw_tuning_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
             changed |= slider(ui, "Mid", &mut t.mid_gain, 0.05..=2.0).changed();
             changed |= slider(ui, "High mid", &mut t.high_mid_gain, 0.05..=2.0).changed();
             changed |= slider(ui, "High", &mut t.high_gain, 0.05..=2.5).changed();
-            changed |= slider(ui, "Bass tilt", &mut t.spectrum_bass_tilt, 0.1..=1.5).changed();
+            changed |= slider(ui, "Bass tilt", &mut t.spectrum_bass_tilt, 0.1..=1.5)
+                .on_hover_text("How much bass owns the start of the ring")
+                .changed();
             ui.add_space(4.0);
             changed |= slider(ui, "Attack", &mut t.attack, 0.05..=1.0).changed();
             changed |= slider(ui, "Release", &mut t.release, 0.02..=0.6).changed();
@@ -328,7 +373,11 @@ fn draw_tuning_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                 app.analyzer.tuning.reset_defaults();
                 changed = true;
             }
-            if ui.button("Bar venue").clicked() {
+            if ui
+                .button("Bar venue")
+                .on_hover_text("Loads the bundled bar preset")
+                .clicked()
+            {
                 app.apply_preset_by_name("bar");
             }
         });
@@ -341,12 +390,13 @@ fn draw_tuning_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
 
 fn draw_levels_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Live levels", true, |ui| {
+        let c = &app.settings.colors;
         level_bar(ui, "RMS", app.features.rms, Color32::from_rgb(180, 180, 200));
-        level_bar(ui, "Bass", app.features.bass, Color32::from_rgb(255, 60, 100));
-        level_bar(ui, "Low Mid", app.features.low_mid, Color32::from_rgb(255, 140, 60));
-        level_bar(ui, "Mid", app.features.mid, Color32::from_rgb(255, 220, 60));
-        level_bar(ui, "High Mid", app.features.high_mid, Color32::from_rgb(60, 220, 120));
-        level_bar(ui, "High", app.features.high, Color32::from_rgb(60, 180, 255));
+        level_bar(ui, "Bass", app.features.bass, rgb_to_color32(c.band_bass));
+        level_bar(ui, "Low Mid", app.features.low_mid, rgb_to_color32(c.band_low_mid));
+        level_bar(ui, "Mid", app.features.mid, rgb_to_color32(c.band_mid));
+        level_bar(ui, "High Mid", app.features.high_mid, rgb_to_color32(c.band_high_mid));
+        level_bar(ui, "High", app.features.high, rgb_to_color32(c.band_high));
     });
 }
 
@@ -384,19 +434,72 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                     .on_hover_text("How far the left/right bass spikes stick out")
                     .changed();
             }
-            ui.add_space(4.0);
-            ui.label(RichText::new("Color").small().strong());
+
+            ui.add_space(6.0);
+            ui.label(RichText::new("Ring color").small().strong());
             ui.horizontal_wrapped(|ui| {
-                for (mode, label) in [
-                    (ColorMode::Rgb, "RGB"),
-                    (ColorMode::Mono, "Mono"),
-                    (ColorMode::Cyan, "Cyan"),
-                    (ColorMode::Amber, "Amber"),
-                    (ColorMode::Magenta, "Magenta"),
+                for (mode, label, tip) in [
+                    (ColorMode::Rainbow, "Rainbow", "Classic neon spectrum"),
+                    (ColorMode::Solid, "Solid", "One color for the whole ring"),
+                    (ColorMode::Gradient, "Gradient", "Blend from low → high"),
+                    (ColorMode::Bands, "Bands", "Custom color per frequency band"),
+                    (ColorMode::Mono, "Mono", "Grayscale"),
                 ] {
-                    changed |= ui.selectable_value(&mut v.color_mode, mode, label).changed();
+                    changed |= ui
+                        .selectable_value(&mut v.color_mode, mode, label)
+                        .on_hover_text(tip)
+                        .changed();
                 }
             });
+        }
+
+        // Legacy Cyan/Amber/Magenta → Solid with that color.
+        {
+            let mode = app.settings.visualizer.color_mode;
+            if let Some(solid) = match mode {
+                ColorMode::Cyan => Some(RgbColor::new(0.2, 0.82, 1.0)),
+                ColorMode::Amber => Some(RgbColor::new(1.0, 0.67, 0.22)),
+                ColorMode::Magenta => Some(RgbColor::new(1.0, 0.22, 0.75)),
+                _ => None,
+            } {
+                app.settings.colors.solid = solid;
+                app.settings.visualizer.color_mode = ColorMode::Solid;
+                changed = true;
+            }
+        }
+
+        {
+            let mode = app.settings.visualizer.color_mode;
+            let colors = &mut app.settings.colors;
+            match mode {
+                ColorMode::Solid => {
+                    changed |= color_picker_row(ui, "Color", &mut colors.solid);
+                }
+                ColorMode::Gradient => {
+                    changed |= color_picker_row(ui, "Low (bass)", &mut colors.gradient_low);
+                    changed |= color_picker_row(ui, "High", &mut colors.gradient_high);
+                }
+                ColorMode::Bands => {
+                    ui.label(
+                        RichText::new("Band colors (bass → high)")
+                            .small()
+                            .color(Color32::GRAY),
+                    );
+                    changed |= color_picker_row(ui, "Bass", &mut colors.band_bass);
+                    changed |= color_picker_row(ui, "Low mid", &mut colors.band_low_mid);
+                    changed |= color_picker_row(ui, "Mid", &mut colors.band_mid);
+                    changed |= color_picker_row(ui, "High mid", &mut colors.band_high_mid);
+                    changed |= color_picker_row(ui, "High", &mut colors.band_high);
+                }
+                _ => {}
+            }
+            changed |= slider(ui, "Color intensity", &mut colors.rgb_intensity, 0.3..=1.6)
+                .on_hover_text("Brightness of spectrum / FFT colors")
+                .changed();
+        }
+
+        {
+            let v = &mut app.settings.visualizer;
             changed |= slider(ui, "Thickness", &mut v.thickness, 0.5..=6.0).changed();
             changed |= slider(ui, "Max length", &mut v.max_bar_length, 0.15..=0.85).changed();
             changed |= slider(ui, "Glow", &mut v.glow, 0.0..=1.5).changed();
@@ -410,6 +513,11 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
 
 fn draw_particles_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Particles", false, |ui| {
+        ui.label(
+            RichText::new("Colors follow the spectrum ring mode")
+                .small()
+                .color(Color32::GRAY),
+        );
         let mut changed = false;
         {
             let p = app.particles.settings_mut();
@@ -521,6 +629,7 @@ fn draw_logo_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
             ui.add_space(4.0);
             ui.label(RichText::new("Shared").small().strong());
             changed |= slider(ui, "Disc size", &mut s.disc_radius, 0.06..=0.35).changed();
+            changed |= color_picker_row(ui, "Disc color", &mut s.disc_color);
             changed |= slider(ui, "Bass bounce", &mut s.bass_pulse, 0.0..=0.35).changed();
             changed |= slider(ui, "Beat bounce", &mut s.beat_pulse, 0.0..=0.45).changed();
             changed |= ui.checkbox(&mut s.disc_ticks, "Disc tick marks").changed();
@@ -616,45 +725,14 @@ fn draw_logo_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                 }
 
                 ui.add_space(4.0);
-                ui.label(RichText::new("Color").small().strong());
+                ui.label(RichText::new("Look").small().strong());
+                changed |= color_picker_tint(ui, "Tint", style);
                 changed |= slider(ui, "Brightness", &mut style.brightness, 0.2..=1.8).changed();
                 changed |= slider(ui, "Opacity", &mut style.opacity, 0.15..=1.0).changed();
-                changed |= slider(ui, "Tint R", &mut style.tint_r, 0.0..=1.5).changed();
-                changed |= slider(ui, "Tint G", &mut style.tint_g, 0.0..=1.5).changed();
-                changed |= slider(ui, "Tint B", &mut style.tint_b, 0.0..=1.5).changed();
-
-                let preview = logo_style_tint(style);
-                let (swatch, _) =
-                    ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), Sense::hover());
-                ui.painter().rect_filled(swatch, 3.0, preview);
-
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("White").clicked() {
-                        set_style_tint(style, 1.0, 1.0, 1.0, 1.0);
-                        changed = true;
-                    }
-                    if ui.button("Warm").clicked() {
-                        set_style_tint(style, 1.15, 0.95, 0.75, 1.05);
-                        changed = true;
-                    }
-                    if ui.button("Cool").clicked() {
-                        set_style_tint(style, 0.75, 0.95, 1.2, 1.05);
-                        changed = true;
-                    }
-                    if ui.button("Cyan").clicked() {
-                        set_style_tint(style, 0.45, 1.05, 1.25, 1.1);
-                        changed = true;
-                    }
-                    if ui.button("Magenta").clicked() {
-                        set_style_tint(style, 1.25, 0.45, 1.1, 1.1);
-                        changed = true;
-                    }
-                    if ui.button("Gold").clicked() {
-                        set_style_tint(style, 1.25, 0.95, 0.4, 1.1);
-                        changed = true;
-                    }
-                });
+                if ui.small_button("Reset tint").clicked() {
+                    set_style_tint(style, 1.0, 1.0, 1.0, 1.0);
+                    changed = true;
+                }
 
                 if app.logos.len() > 1 {
                     ui.add_space(4.0);
@@ -726,6 +804,45 @@ fn slider(
     .inner
 }
 
+fn color_picker_row(ui: &mut egui::Ui, label: &str, color: &mut RgbColor) -> bool {
+    let mut srgb = color.to_srgb();
+    let changed = ui
+        .horizontal(|ui| {
+            ui.add_sized([110.0, 18.0], egui::Label::new(label));
+            ui.color_edit_button_srgb(&mut srgb).changed()
+        })
+        .inner;
+    if changed {
+        *color = RgbColor::from_srgb(srgb);
+    }
+    changed
+}
+
+fn color_picker_tint(ui: &mut egui::Ui, label: &str, style: &mut crate::config::LogoStyle) -> bool {
+    let mut srgb = [
+        (style.tint_r.clamp(0.0, 1.0) * 255.0) as u8,
+        (style.tint_g.clamp(0.0, 1.0) * 255.0) as u8,
+        (style.tint_b.clamp(0.0, 1.0) * 255.0) as u8,
+    ];
+    let changed = ui
+        .horizontal(|ui| {
+            ui.add_sized([110.0, 18.0], egui::Label::new(label));
+            ui.color_edit_button_srgb(&mut srgb).changed()
+        })
+        .inner;
+    if changed {
+        style.tint_r = srgb[0] as f32 / 255.0;
+        style.tint_g = srgb[1] as f32 / 255.0;
+        style.tint_b = srgb[2] as f32 / 255.0;
+    }
+    changed
+}
+
+fn rgb_to_color32(c: RgbColor) -> Color32 {
+    let s = c.to_srgb();
+    Color32::from_rgb(s[0], s[1], s[2])
+}
+
 fn level_bar(ui: &mut egui::Ui, label: &str, value: f32, color: Color32) {
     ui.horizontal(|ui| {
         ui.add_sized([72.0, 18.0], egui::Label::new(label));
@@ -762,6 +879,7 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
     let timing = &app.timing;
     let stage = app.stage().clone();
     let vis = app.settings.visualizer.clone();
+    let colors = app.settings.colors.clone();
     let color_mode = vis.color_mode;
     let particles_on = app.particles.settings().enabled;
     let painter = ui.painter_at(rect);
@@ -797,16 +915,29 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
         + features.bass * stage.bass_pulse * 0.22;
     let disc_r = (min_dim * stage.disc_radius * pulse).max(24.0);
 
-    app.particles.draw(&painter, color_mode);
+    app.particles.draw(&painter, color_mode, &colors);
 
-    draw_spectrum(&painter, center, disc_r, min_dim, features, &vis);
+    draw_spectrum(&painter, center, disc_r, min_dim, features, &vis, &colors);
 
-    // Clean black disc — no colored glow halo behind the logo.
-    painter.circle_filled(center, disc_r, Color32::from_rgb(4, 4, 6));
+    // Disc under the logo — customizable fill.
+    let disc_rgb = stage.disc_color.to_srgb();
+    painter.circle_filled(
+        center,
+        disc_r,
+        Color32::from_rgb(disc_rgb[0], disc_rgb[1], disc_rgb[2]),
+    );
+    let stroke_rgb = [
+        disc_rgb[0].saturating_add(24),
+        disc_rgb[1].saturating_add(24),
+        disc_rgb[2].saturating_add(30),
+    ];
     painter.circle_stroke(
         center,
         disc_r,
-        Stroke::new(1.5_f32, Color32::from_rgb(28, 28, 36)),
+        Stroke::new(
+            1.5_f32,
+            Color32::from_rgb(stroke_rgb[0], stroke_rgb[1], stroke_rgb[2]),
+        ),
     );
 
     let logo_angle = app.logo_draw_angle();
@@ -859,7 +990,7 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
     }
 
     if app.show_fft_debug {
-        draw_fft_graph(&painter, rect, features, color_mode);
+        draw_fft_graph(&painter, rect, features, color_mode, &colors);
     }
 
     if show_debug {
@@ -887,6 +1018,7 @@ fn draw_spectrum(
     min_dim: f32,
     features: &crate::audio::AudioFeatures,
     vis: &crate::config::VisualizerSettings,
+    colors: &ColorSettings,
 ) {
     let spectrum = &features.spectrum;
     if spectrum.is_empty() {
@@ -933,6 +1065,7 @@ fn draw_spectrum(
                 glow,
                 intensity,
                 vis.color_mode,
+                colors,
                 &pts,
             );
         }
@@ -945,6 +1078,7 @@ fn draw_spectrum(
                 glow,
                 intensity,
                 vis.color_mode,
+                colors,
                 matches!(vis.style, SpectrumStyle::SoftGlow),
                 vis.layout == SpectrumLayout::Full,
                 &pts,
@@ -1054,13 +1188,14 @@ fn draw_ring_bars(
     glow: f32,
     intensity: f32,
     mode: ColorMode,
+    colors: &ColorSettings,
     pts: &[SpecPoint],
 ) {
     for p in pts {
         let len = p.mag.clamp(0.0, 1.45) * max_len;
         let inner = ring_pos(center, p.t, base_r);
         let outer = ring_pos(center, p.t, base_r + len);
-        let color = spectrum_color(p.hue, intensity, mode);
+        let color = spectrum_color(p.hue, intensity, mode, colors);
         if glow > 0.05 {
             painter.line_segment(
                 [inner, outer],
@@ -1079,6 +1214,7 @@ fn draw_ring_smooth(
     glow: f32,
     intensity: f32,
     mode: ColorMode,
+    colors: &ColorSettings,
     soft_glow: bool,
     rainbow_wrap: bool,
     pts: &[SpecPoint],
@@ -1100,7 +1236,7 @@ fn draw_ring_smooth(
         } else {
             (a.hue + b.hue) * 0.5
         };
-        let color = spectrum_color(hue, intensity, mode);
+        let color = spectrum_color(hue, intensity, mode, colors);
 
         if soft_glow && glow > 0.05 {
             let gc = with_alpha(color, (32.0 * glow) as u8);
@@ -1286,6 +1422,7 @@ fn draw_fft_graph(
     rect: egui::Rect,
     features: &crate::audio::AudioFeatures,
     mode: ColorMode,
+    colors: &ColorSettings,
 ) {
     let graph_h = 110.0_f32.min(rect.height() * 0.2);
     let graph = egui::Rect::from_min_max(
@@ -1302,52 +1439,16 @@ fn draw_fft_graph(
             egui::pos2(x + 0.5, graph.bottom() - h),
             egui::pos2(x + bar_w - 0.5, graph.bottom()),
         );
-        painter.rect_filled(bar, 0.0, spectrum_color(i as f32 / n as f32, 0.9, mode));
+        painter.rect_filled(bar, 0.0, spectrum_color(i as f32 / n as f32, 0.9, mode, colors));
     }
 }
 
-fn spectrum_color(t: f32, intensity: f32, mode: ColorMode) -> Color32 {
-    let v = intensity.clamp(0.4, 1.0);
-    match mode {
-        ColorMode::Rgb => {
-            // Smooth neon rainbow: red → yellow → green → cyan → blue → magenta → red.
-            // Cosine-interpolated stops (no hard HSV segment edges).
-            let (r, g, b) = neon_rainbow(t.fract());
-            Color32::from_rgb((r * v * 255.0) as u8, (g * v * 255.0) as u8, (b * v * 255.0) as u8)
-        }
-        ColorMode::Mono => {
-            let g = (150.0 + 95.0 * v) as u8;
-            Color32::from_rgb(g, g, g)
-        }
-        ColorMode::Cyan => Color32::from_rgb(50, (210.0 * v) as u8, 255),
-        ColorMode::Amber => Color32::from_rgb(255, (170.0 * v) as u8, 55),
-        ColorMode::Magenta => Color32::from_rgb(255, 55, (190.0 * v) as u8),
-    }
-}
-
-/// Piecewise cosine blend across neon stops for a continuous ring (seamless at t=0/1).
-fn neon_rainbow(t: f32) -> (f32, f32, f32) {
-    // Stops evenly around the circle
-    const STOPS: [(f32, f32, f32); 6] = [
-        (1.00, 0.20, 0.35), // red / pink
-        (1.00, 0.75, 0.15), // amber
-        (0.25, 1.00, 0.40), // green
-        (0.15, 0.90, 1.00), // cyan
-        (0.35, 0.35, 1.00), // blue
-        (0.95, 0.25, 0.95), // magenta
-    ];
-    let n = STOPS.len() as f32;
-    let x = t.fract() * n;
-    let i = x.floor() as usize % STOPS.len();
-    let j = (i + 1) % STOPS.len();
-    let f = x - x.floor();
-    let f = (1.0 - (f * std::f32::consts::PI).cos()) * 0.5; // smoothstep-ish
-    let a = STOPS[i];
-    let b = STOPS[j];
-    (
-        a.0 + (b.0 - a.0) * f,
-        a.1 + (b.1 - a.1) * f,
-        a.2 + (b.2 - a.2) * f,
+fn spectrum_color(t: f32, intensity: f32, mode: ColorMode, colors: &ColorSettings) -> Color32 {
+    let rgb = colors.sample(mode, t, intensity);
+    Color32::from_rgb(
+        (rgb.r * 255.0) as u8,
+        (rgb.g * 255.0) as u8,
+        (rgb.b * 255.0) as u8,
     )
 }
 
