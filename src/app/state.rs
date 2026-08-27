@@ -260,7 +260,7 @@ impl LiveVisualizerApp {
 
     pub fn pick_background(&mut self, ctx: &egui::Context) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp"])
+            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "svg", "svgz"])
             .set_title("Select background image")
             .pick_file()
         {
@@ -272,7 +272,7 @@ impl LiveVisualizerApp {
 
     pub fn pick_logo(&mut self, ctx: &egui::Context) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp"])
+            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "svg", "svgz"])
             .set_title("Add logo / artwork")
             .pick_file()
         {
@@ -284,7 +284,7 @@ impl LiveVisualizerApp {
 
     pub fn pick_logos(&mut self, ctx: &egui::Context) {
         let paths = rfd::FileDialog::new()
-            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp"])
+            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "svg", "svgz"])
             .set_title("Add logos (multi-select)")
             .pick_files();
         if let Some(paths) = paths {
