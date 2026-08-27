@@ -11,9 +11,18 @@ use crate::audio::BeatMode;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ColorMode {
+    /// Neon rainbow around the ring / along the FFT.
     #[default]
-    Rgb,
+    #[serde(alias = "rgb")]
+    Rainbow,
+    /// Single custom color (see `ColorSettings::solid`).
+    Solid,
+    /// Blend from low → high (see gradient colors).
+    Gradient,
+    /// Five frequency-band colors blended by position.
+    Bands,
     Mono,
+    /// Legacy presets — still render; UI maps to Solid.
     Cyan,
     Amber,
     Magenta,
@@ -202,6 +211,9 @@ pub struct StageSettings {
     /// Optional thin tick marks on the black disc that spin with the logo.
     #[serde(default)]
     pub disc_ticks: bool,
+    /// Center disc fill color (under the logo).
+    #[serde(default = "default_disc_color")]
+    pub disc_color: RgbColor,
     /// Seconds each logo stays before cycling (multi-logo).
     #[serde(default = "default_logo_hold")]
     pub logo_hold_secs: f32,
@@ -237,6 +249,10 @@ fn default_true_stage() -> bool {
     true
 }
 
+fn default_disc_color() -> RgbColor {
+    RgbColor::new(4.0 / 255.0, 4.0 / 255.0, 6.0 / 255.0)
+}
+
 impl Default for StageSettings {
     fn default() -> Self {
         Self {
@@ -261,6 +277,7 @@ impl Default for StageSettings {
             logo_spin_speed: 0.15,
             logo_motion_amount: 0.35,
             disc_ticks: false,
+            disc_color: default_disc_color(),
             logo_hold_secs: 8.0,
             logo_glitch: true,
             logo_glitch_amount: 1.0,
@@ -417,17 +434,106 @@ fn default_rms_weight() -> f32 {
     0.35
 }
 
+/// Linear RGB in 0..1 (may exceed 1 for boosted logo tints elsewhere).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct RgbColor {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+}
+
+impl RgbColor {
+    pub const fn new(r: f32, g: f32, b: f32) -> Self {
+        Self { r, g, b }
+    }
+
+    pub fn to_srgb(self) -> [u8; 3] {
+        [
+            (self.r.clamp(0.0, 1.0) * 255.0) as u8,
+            (self.g.clamp(0.0, 1.0) * 255.0) as u8,
+            (self.b.clamp(0.0, 1.0) * 255.0) as u8,
+        ]
+    }
+
+    pub fn from_srgb(c: [u8; 3]) -> Self {
+        Self {
+            r: c[0] as f32 / 255.0,
+            g: c[1] as f32 / 255.0,
+            b: c[2] as f32 / 255.0,
+        }
+    }
+
+    pub fn lerp(self, other: Self, t: f32) -> Self {
+        let t = t.clamp(0.0, 1.0);
+        Self {
+            r: self.r + (other.r - self.r) * t,
+            g: self.g + (other.g - self.g) * t,
+            b: self.b + (other.b - self.b) * t,
+        }
+    }
+
+    pub fn scale(self, v: f32) -> Self {
+        Self {
+            r: (self.r * v).clamp(0.0, 1.0),
+            g: (self.g * v).clamp(0.0, 1.0),
+            b: (self.b * v).clamp(0.0, 1.0),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColorSettings {
     pub rgb_intensity: f32,
     pub glow_intensity: f32,
+    /// Used when `color_mode` is Solid (and legacy Cyan/Amber/Magenta overrides).
+    #[serde(default = "default_solid_color")]
+    pub solid: RgbColor,
+    #[serde(default = "default_gradient_low")]
+    pub gradient_low: RgbColor,
+    #[serde(default = "default_gradient_high")]
+    pub gradient_high: RgbColor,
+    #[serde(default = "default_band_bass")]
+    pub band_bass: RgbColor,
+    #[serde(default = "default_band_low_mid")]
+    pub band_low_mid: RgbColor,
+    #[serde(default = "default_band_mid")]
+    pub band_mid: RgbColor,
+    #[serde(default = "default_band_high_mid")]
+    pub band_high_mid: RgbColor,
+    #[serde(default = "default_band_high")]
+    pub band_high: RgbColor,
+}
+
+fn default_solid_color() -> RgbColor {
+    RgbColor::new(0.15, 0.85, 1.0)
+}
+fn default_gradient_low() -> RgbColor {
+    RgbColor::new(1.0, 0.2, 0.45)
+}
+fn default_gradient_high() -> RgbColor {
+    RgbColor::new(0.2, 0.85, 1.0)
+}
+fn default_band_bass() -> RgbColor {
+    RgbColor::new(1.0, 0.2, 0.35)
+}
+fn default_band_low_mid() -> RgbColor {
+    RgbColor::new(1.0, 0.55, 0.15)
+}
+fn default_band_mid() -> RgbColor {
+    RgbColor::new(1.0, 0.9, 0.2)
+}
+fn default_band_high_mid() -> RgbColor {
+    RgbColor::new(0.25, 0.95, 0.45)
+}
+fn default_band_high() -> RgbColor {
+    RgbColor::new(0.25, 0.65, 1.0)
 }
 
 impl Default for VisualizerSettings {
     fn default() -> Self {
         Self {
             style: SpectrumStyle::Bars,
-            color_mode: ColorMode::Rgb,
+            color_mode: ColorMode::Rainbow,
             layout: SpectrumLayout::Full,
             radius: 0.22,
             thickness: 2.0,
@@ -537,8 +643,92 @@ impl Default for ColorSettings {
         Self {
             rgb_intensity: 1.0,
             glow_intensity: 0.6,
+            solid: default_solid_color(),
+            gradient_low: default_gradient_low(),
+            gradient_high: default_gradient_high(),
+            band_bass: default_band_bass(),
+            band_low_mid: default_band_low_mid(),
+            band_mid: default_band_mid(),
+            band_high_mid: default_band_high_mid(),
+            band_high: default_band_high(),
         }
     }
+}
+
+impl ColorSettings {
+    /// Sample a color for spectrum/FFT position `t` in 0..1 (bass → high).
+    pub fn sample(&self, mode: ColorMode, t: f32, intensity: f32) -> RgbColor {
+        let boost = (intensity * self.rgb_intensity).clamp(0.35, 1.35);
+        let t = t.fract();
+        match mode {
+            ColorMode::Rainbow => {
+                let (r, g, b) = neon_rainbow(t);
+                RgbColor::new(r, g, b).scale(boost.min(1.0))
+            }
+            ColorMode::Solid => self.solid.scale(boost.min(1.0)),
+            ColorMode::Gradient => self
+                .gradient_low
+                .lerp(self.gradient_high, t)
+                .scale(boost.min(1.0)),
+            ColorMode::Bands => self.sample_bands(t).scale(boost.min(1.0)),
+            ColorMode::Mono => {
+                let g = (0.58 + 0.38 * intensity.clamp(0.0, 1.0)).min(1.0);
+                RgbColor::new(g, g, g)
+            }
+            ColorMode::Cyan => RgbColor::new(0.2, 0.82, 1.0).scale(boost.min(1.0)),
+            ColorMode::Amber => RgbColor::new(1.0, 0.67, 0.22).scale(boost.min(1.0)),
+            ColorMode::Magenta => RgbColor::new(1.0, 0.22, 0.75).scale(boost.min(1.0)),
+        }
+    }
+
+    fn sample_bands(&self, t: f32) -> RgbColor {
+        let stops = [
+            (0.0, self.band_bass),
+            (0.22, self.band_low_mid),
+            (0.45, self.band_mid),
+            (0.7, self.band_high_mid),
+            (1.0, self.band_high),
+        ];
+        for w in stops.windows(2) {
+            let (t0, c0) = w[0];
+            let (t1, c1) = w[1];
+            if t <= t1 + f32::EPSILON {
+                let u = if (t1 - t0).abs() < f32::EPSILON {
+                    0.0
+                } else {
+                    ((t - t0) / (t1 - t0)).clamp(0.0, 1.0)
+                };
+                let u = (1.0 - (u * std::f32::consts::PI).cos()) * 0.5;
+                return c0.lerp(c1, u);
+            }
+        }
+        self.band_high
+    }
+}
+
+/// Neon rainbow stops shared by spectrum / FFT.
+pub fn neon_rainbow(t: f32) -> (f32, f32, f32) {
+    const STOPS: [(f32, f32, f32); 6] = [
+        (1.00, 0.20, 0.35),
+        (1.00, 0.75, 0.15),
+        (0.25, 1.00, 0.40),
+        (0.15, 0.90, 1.00),
+        (0.35, 0.35, 1.00),
+        (0.95, 0.25, 0.95),
+    ];
+    let n = STOPS.len() as f32;
+    let x = t.fract() * n;
+    let i = x.floor() as usize % STOPS.len();
+    let j = (i + 1) % STOPS.len();
+    let f = x - x.floor();
+    let f = (1.0 - (f * std::f32::consts::PI).cos()) * 0.5;
+    let a = STOPS[i];
+    let b = STOPS[j];
+    (
+        a.0 + (b.0 - a.0) * f,
+        a.1 + (b.1 - a.1) * f,
+        a.2 + (b.2 - a.2) * f,
+    )
 }
 
 impl Default for Preset {
