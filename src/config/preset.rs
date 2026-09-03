@@ -752,23 +752,6 @@ pub fn settings_path() -> PathBuf {
         .join("settings.toml")
 }
 
-/// Factory / bundled presets (repo USB copy or next to the exe).
-pub fn bundled_presets_dir() -> PathBuf {
-    let local = PathBuf::from("presets");
-    if local.is_dir() {
-        return local;
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let beside = parent.join("presets");
-            if beside.is_dir() {
-                return beside;
-            }
-        }
-    }
-    local
-}
-
 /// User-writable presets — always under the app config dir (reliable regardless of cwd).
 pub fn user_presets_dir() -> PathBuf {
     dirs::config_dir()
@@ -780,6 +763,36 @@ pub fn user_presets_dir() -> PathBuf {
 /// Directory used for new saves (user presets).
 pub fn presets_dir() -> PathBuf {
     user_presets_dir()
+}
+
+/// Built-in factory presets (compiled into the binary from `presets/*.toml`).
+fn builtin_preset_toml(name: &str) -> Option<&'static str> {
+    match name {
+        "default" => Some(include_str!("../../presets/default.toml")),
+        "rgb" => Some(include_str!("../../presets/rgb.toml")),
+        "mono" => Some(include_str!("../../presets/mono.toml")),
+        "smooth" => Some(include_str!("../../presets/smooth.toml")),
+        "particles" => Some(include_str!("../../presets/particles.toml")),
+        "bar" => Some(include_str!("../../presets/bar.toml")),
+        "neon" => Some(include_str!("../../presets/neon.toml")),
+        "beat_bass" => Some(include_str!("../../presets/beat_bass.toml")),
+        "beat_kick" => Some(include_str!("../../presets/beat_kick.toml")),
+        _ => None,
+    }
+}
+
+fn builtin_preset_names() -> &'static [&'static str] {
+    &[
+        "bar",
+        "beat_bass",
+        "beat_kick",
+        "default",
+        "mono",
+        "neon",
+        "particles",
+        "rgb",
+        "smooth",
+    ]
 }
 
 /// Safe file stem for a preset name (spaces → `_`, strip unsafe chars).
@@ -852,27 +865,26 @@ pub fn save_settings(settings: &AppSettings) -> Result<()> {
 }
 
 pub fn list_presets() -> Vec<String> {
-    let mut names = Vec::new();
-    // User presets first so they win on name collisions in the list order sense;
-    // load_preset also prefers user.
+    let mut names: Vec<String> = builtin_preset_names()
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
     collect_preset_names(&user_presets_dir(), &mut names);
-    collect_preset_names(&bundled_presets_dir(), &mut names);
     names.sort();
+    names.dedup();
     names
 }
 
-fn preset_path(name: &str) -> PathBuf {
-    let file = format!("{name}.toml");
-    let user = user_presets_dir().join(&file);
-    if user.exists() {
-        return user;
-    }
-    bundled_presets_dir().join(file)
-}
-
 pub fn load_preset(name: &str) -> Result<Preset> {
-    let path = preset_path(name);
-    let text = fs::read_to_string(&path).with_context(|| format!("Reading {path:?}"))?;
+    // User saves override built-ins of the same name.
+    let user_path = user_presets_dir().join(format!("{name}.toml"));
+    let text = if user_path.exists() {
+        fs::read_to_string(&user_path).with_context(|| format!("Reading {user_path:?}"))?
+    } else if let Some(builtin) = builtin_preset_toml(name) {
+        builtin.to_string()
+    } else {
+        anyhow::bail!("Unknown preset '{name}'");
+    };
     let mut preset: Preset = toml::from_str(&text).context("Parsing preset")?;
     if preset.name.is_empty() {
         preset.name = name.to_string();
