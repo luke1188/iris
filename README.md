@@ -18,6 +18,9 @@ cargo run --release
 
 CI builds **Windows x64** and **macOS Apple Silicon** packages on `main` / PRs (download from the Actions run). Push a `v*` tag to attach real `.zip` files to a GitHub Release.
 
+- **Windows:** run `iris_visualizer.exe`
+- **macOS:** open `Iris Visualizer.app` by right click -> open
+
 ### Presets
 
 In the **PRESETS** panel (or `presets/` folder):

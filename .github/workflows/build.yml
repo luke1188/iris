@@ -24,11 +24,13 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: iris_visualizer-windows-x64
             binary: iris_visualizer.exe
+            kind: windows
           - name: macOS Apple Silicon
             os: macos-14
             target: aarch64-apple-darwin
             artifact: iris_visualizer-macos-aarch64
             binary: iris_visualizer
+            kind: macos
 
     steps:
       - name: Checkout
@@ -47,40 +49,64 @@ jobs:
       - name: Build release
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Stage package
+      - name: Stage Windows package
+        if: matrix.kind == 'windows'
         shell: bash
         run: |
           set -euo pipefail
           bin="target/${{ matrix.target }}/release/${{ matrix.binary }}"
-          if [ ! -f "$bin" ]; then
-            echo "Missing binary at $bin"
-            ls -la "target/${{ matrix.target }}/release/" || true
-            exit 1
-          fi
+          test -f "$bin"
           staging="dist/${{ matrix.artifact }}"
           mkdir -p "$staging"
           cp "$bin" "$staging/"
-          chmod +x "$staging/${{ matrix.binary }}" || true
           cp -R presets "$staging/presets"
-          if [ -d assets ]; then
-            cp -R assets "$staging/assets"
-          fi
-          if [ -f README.md ]; then
-            cp README.md "$staging/"
-          fi
+          if [ -d assets ]; then cp -R assets "$staging/assets"; fi
+          if [ -f README.md ]; then cp README.md "$staging/"; fi
           if [ -f docs/WINDOWS.md ]; then
             mkdir -p "$staging/docs"
             cp docs/WINDOWS.md "$staging/docs/"
           fi
-          ls -la "$staging"
+          # Zip on the native runner so the exe stays intact.
+          mkdir -p dist/zips
+          (cd dist && zip -r "zips/${{ matrix.artifact }}.zip" "${{ matrix.artifact }}")
+          ls -la "$staging" dist/zips
 
-      # Upload the folder (not a pre-made .zip). Actions already wraps
-      # artifacts once — zipping first causes zip-in-zip downloads.
-      - name: Upload artifact
+      - name: Stage macOS .app package
+        if: matrix.kind == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          test -f "$bin"
+          chmod +x scripts/package-macos-app.sh
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then VERSION="0.1.0"; fi
+          staging="dist/${{ matrix.artifact }}"
+          VERSION="$VERSION" ./scripts/package-macos-app.sh "$bin" "$staging"
+          cp docs/MACOS.md "$staging/MACOS.md"
+          # Zip on macOS so the executable bit and .app layout survive.
+          mkdir -p dist/zips
+          (
+            cd "$staging"
+            zip -ry "../../dist/zips/${{ matrix.artifact }}.zip" "Iris Visualizer.app" MACOS.md
+          )
+          ls -laR "$staging"
+          ls -la dist/zips
+          file "$staging/Iris Visualizer.app/Contents/MacOS/iris_visualizer"
+          test -x "$staging/Iris Visualizer.app/Contents/MacOS/iris_visualizer"
+
+      - name: Upload folder artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}/
+          if-no-files-found: error
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-zip
+          path: dist/zips/${{ matrix.artifact }}.zip
           if-no-files-found: error
 
   release:
@@ -91,28 +117,27 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
+      - name: Download zip artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          pattern: '*-zip'
+          path: zips
+          merge-multiple: true
 
-      - name: Zip packages for release
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p release
-          for dir in artifacts/*; do
-            [ -d "$dir" ] || continue
-            name="$(basename "$dir")"
-            (cd "$dir" && zip -r "../../release/${name}.zip" .)
-          done
-          ls -la release
+      - name: List release files
+        run: ls -laR zips
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           draft: false
           generate_release_notes: true
-          files: release/*.zip
+          files: zips/*.zip
+          body: |
+            ## Downloads
+            - **Windows:** unzip and run `iris_visualizer.exe`
+            - **macOS (Apple Silicon):** unzip and open **`Iris Visualizer.app`**
+              - If macOS says the app is damaged/untrusted, see `MACOS.md` in the zip (`xattr -cr` / right-click → Open).
+              - Removing the warning for all users requires Apple Developer ID signing + notarization.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
