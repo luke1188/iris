@@ -83,12 +83,11 @@ jobs:
           if [[ "$GITHUB_REF" != refs/tags/* ]]; then VERSION="0.1.0"; fi
           staging="dist/${{ matrix.artifact }}"
           VERSION="$VERSION" ./scripts/package-macos-app.sh "$bin" "$staging"
-          cp docs/MACOS.md "$staging/MACOS.md"
           # Zip on macOS so the executable bit and .app layout survive.
           mkdir -p dist/zips
           (
             cd "$staging"
-            zip -ry "../../dist/zips/${{ matrix.artifact }}.zip" "Iris Visualizer.app" MACOS.md
+            zip -ry "../../dist/zips/${{ matrix.artifact }}.zip" "Iris Visualizer.app"
           )
           ls -laR "$staging"
           ls -la dist/zips
@@ -137,7 +136,7 @@ jobs:
             ## Downloads
             - **Windows:** unzip and run `iris_visualizer.exe`
             - **macOS (Apple Silicon):** unzip and open **`Iris Visualizer.app`**
-              - If macOS says the app is damaged/untrusted, see `MACOS.md` in the zip (`xattr -cr` / right-click → Open).
+              - If macOS says the app is damaged/untrusted, (`xattr -cr` / right-click → Open).
               - Removing the warning for all users requires Apple Developer ID signing + notarization.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
