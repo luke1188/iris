@@ -33,79 +33,77 @@ jobs:
             kind: macos
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
       - name: Build release
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Stage Windows package
+      # Windows: just the exe (icon + presets are baked into the binary).
+      - name: Package Windows
         if: matrix.kind == 'windows'
         shell: bash
         run: |
           set -euo pipefail
-          bin="target/${{ matrix.target }}/release/${{ matrix.binary }}"
-          test -f "$bin"
-          staging="dist/${{ matrix.artifact }}"
-          mkdir -p "$staging"
-          cp "$bin" "$staging/"
-          cp -R presets "$staging/presets"
-          if [ -d assets ]; then cp -R assets "$staging/assets"; fi
-          if [ -f README.md ]; then cp README.md "$staging/"; fi
-          if [ -f docs/WINDOWS.md ]; then
-            mkdir -p "$staging/docs"
-            cp docs/WINDOWS.md "$staging/docs/"
-          fi
-          # Zip on the native runner so the exe stays intact.
-          mkdir -p dist/zips
-          (cd dist && zip -r "zips/${{ matrix.artifact }}.zip" "${{ matrix.artifact }}")
-          ls -la "$staging" dist/zips
+          mkdir -p "dist/${{ matrix.artifact }}"
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
+            "dist/${{ matrix.artifact }}/"
+          ls -la "dist/${{ matrix.artifact }}"
 
-      - name: Stage macOS .app package
+      # macOS: .app only — Actions already zips folders for download.
+      # Release zips are created with ditto (plain zip marks .app as "damaged").
+      - name: Package macOS
         if: matrix.kind == 'macos'
         shell: bash
         run: |
           set -euo pipefail
-          bin="target/${{ matrix.target }}/release/${{ matrix.binary }}"
-          test -f "$bin"
           chmod +x scripts/package-macos-app.sh
           VERSION="${GITHUB_REF_NAME#v}"
-          if [[ "$GITHUB_REF" != refs/tags/* ]]; then VERSION="0.1.0"; fi
+          [[ "$GITHUB_REF" == refs/tags/* ]] || VERSION="0.1.0"
           staging="dist/${{ matrix.artifact }}"
-          VERSION="$VERSION" ./scripts/package-macos-app.sh "$bin" "$staging"
-          # Zip on macOS so the executable bit and .app layout survive.
-          mkdir -p dist/zips
-          (
-            cd "$staging"
-            zip -ry "../../dist/zips/${{ matrix.artifact }}.zip" "Iris Visualizer.app"
-          )
-          ls -laR "$staging"
-          ls -la dist/zips
-          file "$staging/Iris Visualizer.app/Contents/MacOS/iris_visualizer"
+          VERSION="$VERSION" ./scripts/package-macos-app.sh \
+            "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
+            "$staging"
           test -x "$staging/Iris Visualizer.app/Contents/MacOS/iris_visualizer"
+          file "$staging/Iris Visualizer.app/Contents/MacOS/iris_visualizer"
 
-      - name: Upload folder artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}/
           if-no-files-found: error
 
-      - name: Upload zip artifact
+      # Only for tagged releases — GitHub Releases need a single archive file.
+      - name: Zip for GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          if [[ "${{ matrix.kind }}" == "macos" ]]; then
+            ditto -c -k --keepParent \
+              "dist/${{ matrix.artifact }}/Iris Visualizer.app" \
+              "dist/release/${{ matrix.artifact }}.zip"
+          else
+            (cd dist && zip -r "release/${{ matrix.artifact }}.zip" "${{ matrix.artifact }}")
+          fi
+          ls -la dist/release
+
+      - name: Upload release zip
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}-zip
-          path: dist/zips/${{ matrix.artifact }}.zip
+          name: ${{ matrix.artifact }}-release
+          path: dist/release/${{ matrix.artifact }}.zip
           if-no-files-found: error
 
   release:
@@ -116,27 +114,23 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download zip artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          pattern: '*-zip'
-          path: zips
+          pattern: '*-release'
+          path: release
           merge-multiple: true
 
-      - name: List release files
-        run: ls -laR zips
+      - run: ls -laR release
 
-      - name: Create release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           draft: false
           generate_release_notes: true
-          files: zips/*.zip
+          files: release/*.zip
           body: |
             ## Downloads
-            - **Windows:** unzip and run `iris_visualizer.exe`
-            - **macOS (Apple Silicon):** unzip and open **`Iris Visualizer.app`**
-              - If macOS says the app is damaged/untrusted, (`xattr -cr` / right-click → Open).
-              - Removing the warning for all users requires Apple Developer ID signing + notarization.
+            - **Windows:** unzip → `iris_visualizer.exe`
+            - **macOS (Apple Silicon):** unzip → **`Iris Visualizer.app`**
+              - If macOS says damaged/untrusted: `xattr -cr "Iris Visualizer.app"` then right-click → Open
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -117,7 +117,7 @@ fn section_frame(ui: &mut egui::Ui, title: &str, default_open: bool, add_content
 fn draw_presets_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Presets", true, |ui| {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").on_hover_text("Reload presets folder").clicked() {
+            if ui.button("Refresh").on_hover_text("Reload user presets folder").clicked() {
                 app.refresh_presets();
             }
             let active = match (

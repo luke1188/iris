@@ -22,27 +22,11 @@ RESOURCES="$CONTENTS/Resources"
 rm -rf "$APP"
 mkdir -p "$MACOS" "$RESOURCES"
 
-# Executable must keep +x or Finder treats it like a document.
 cp "$BIN" "$MACOS/iris_visualizer"
 chmod 755 "$MACOS/iris_visualizer"
 
-# Presets / assets next to the binary (app looks beside current_exe).
-if [[ -d presets ]]; then
-  cp -R presets "$MACOS/presets"
-fi
-if [[ -d assets ]]; then
-  cp -R assets "$MACOS/assets"
-  cp -R assets "$RESOURCES/assets" 2>/dev/null || true
-fi
-if [[ -f README.md ]]; then
-  cp README.md "$RESOURCES/"
-fi
-if [[ -f docs/MACOS.md ]]; then
-  mkdir -p "$RESOURCES/docs"
-  cp docs/MACOS.md "$RESOURCES/docs/"
-fi
-
-# Optional .icns from PNG (best-effort; app still works without it).
+# Optional Dock icon from assets/icon.png
+ICON_KEY=""
 if [[ -f assets/icon.png ]] && command -v sips >/dev/null && command -v iconutil >/dev/null; then
   ICONSET="$(mktemp -d)/AppIcon.iconset"
   mkdir -p "$ICONSET"
@@ -52,12 +36,8 @@ if [[ -f assets/icon.png ]] && command -v sips >/dev/null && command -v iconutil
   done
   if iconutil -c icns "$ICONSET" -o "$RESOURCES/AppIcon.icns" 2>/dev/null; then
     ICON_KEY=$'\n  <key>CFBundleIconFile</key>\n  <string>AppIcon</string>'
-  else
-    ICON_KEY=""
   fi
   rm -rf "$(dirname "$ICONSET")"
-else
-  ICON_KEY=""
 fi
 
 cat > "$CONTENTS/Info.plist" <<PLIST
@@ -93,9 +73,10 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Clear any stale quarantine on the package we just built (local runs).
+# Ad-hoc sign so Gatekeeper is less likely to call an unsigned download "damaged".
+# (Full trust still needs Developer ID + notarization.)
+codesign --force --deep --sign - "$APP" 2>/dev/null || true
 xattr -cr "$APP" 2>/dev/null || true
 
 echo "Created $APP"
-ls -la "$MACOS"
 file "$MACOS/iris_visualizer"
