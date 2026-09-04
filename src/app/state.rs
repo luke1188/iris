@@ -2,8 +2,8 @@
 
 use crate::audio::{AudioCapture, AudioDeviceInfo, AudioFeatures, Analyzer};
 use crate::config::{
-    list_presets, load_preset, load_settings, sanitize_preset_name, save_preset, save_settings,
-    AppSettings, LogoMotion, LogoStyle, StageSettings,
+    is_center_effect, list_presets, load_preset, load_settings, sanitize_preset_name, save_preset,
+    save_settings, AppSettings, LogoMotion, LogoStyle, StageSettings,
 };
 use crate::display::{is_fullscreen, toggle_fullscreen};
 use crate::renderer::ParticleSystem;
@@ -20,6 +20,51 @@ pub struct FrameTiming {
     pub fps: f32,
     pub frame_ms: f32,
     pub audio_ms: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CrtPhase {
+    Idle,
+    /// Flatten current item → line → point (0..1).
+    Out(f32),
+    /// Point → line → expand new item (0..1).
+    In(f32),
+}
+
+impl CrtPhase {
+    pub fn factors(self) -> (f32, f32, f32) {
+        match self {
+            CrtPhase::Idle => (1.0, 1.0, 1.0),
+            CrtPhase::Out(t) => {
+                let t = t.clamp(0.0, 1.0);
+                if t < 0.55 {
+                    let u = t / 0.55;
+                    let u = u * u * (3.0 - 2.0 * u);
+                    (1.0, (1.0 - u * 0.97).max(0.025), 1.0)
+                } else {
+                    let u = ((t - 0.55) / 0.45).clamp(0.0, 1.0);
+                    let u = u * u;
+                    ((1.0 - u).max(0.02), 0.025, 1.0 - u * 0.35)
+                }
+            }
+            CrtPhase::In(t) => {
+                let t = t.clamp(0.0, 1.0);
+                if t < 0.45 {
+                    let u = t / 0.45;
+                    let u = u * u;
+                    (u.max(0.02), 0.025, 0.65 + 0.35 * u)
+                } else {
+                    let u = ((t - 0.45) / 0.55).clamp(0.0, 1.0);
+                    let u = u * u * (3.0 - 2.0 * u);
+                    (1.0, 0.025 + u * 0.975, 1.0)
+                }
+            }
+        }
+    }
+
+    pub fn is_busy(self) -> bool {
+        !matches!(self, CrtPhase::Idle)
+    }
 }
 
 pub struct LiveVisualizerApp {
@@ -39,7 +84,8 @@ pub struct LiveVisualizerApp {
     pub error_message: Option<String>,
     pub status_message: Option<String>,
     pub background: Option<LoadedTexture>,
-    pub logos: Vec<LoadedTexture>,
+    /// Parallel to `settings.logo_paths` — `None` for Scope/Spectrum effect slots.
+    pub logos: Vec<Option<LoadedTexture>>,
     pub logo_index: usize,
     pub logo_from_index: usize,
     /// Hold countdown until next logo (seconds).
@@ -63,6 +109,12 @@ pub struct LiveVisualizerApp {
     pub logo_angle: f32,
     /// Phase for wobble / pendulum (radians).
     pub logo_motion_phase: f32,
+    /// Smoothed heights for the Apple-style center spectrum bars.
+    pub center_bars_smooth: Vec<f32>,
+    /// CRT transition: Idle / collapsing out / expanding in.
+    pub crt_phase: CrtPhase,
+    /// Index to reveal after CRT-out completes.
+    pub crt_pending_index: usize,
     last_frame: Instant,
     frame_count: u32,
     fps_timer: Instant,
@@ -151,6 +203,9 @@ impl LiveVisualizerApp {
             shutting_down: false,
             logo_angle: 0.0,
             logo_motion_phase: 0.0,
+            center_bars_smooth: vec![0.0; 21],
+            crt_phase: CrtPhase::Idle,
+            crt_pending_index: 0,
             last_frame: Instant::now(),
             frame_count: 0,
             fps_timer: Instant::now(),
@@ -165,11 +220,22 @@ impl LiveVisualizerApp {
         }
         if !app.settings.logo_paths.is_empty() {
             let paths = app.settings.logo_paths.clone();
-            for (i, path) in paths.iter().enumerate() {
-                if let Err(e) = app.push_logo_with_ctx(&cc.egui_ctx, PathBuf::from(path), i == 0) {
+            app.logos.clear();
+            for path in &paths {
+                if crate::config::is_center_effect(path) {
+                    app.logos.push(None);
+                } else if let Err(e) =
+                    app.load_logo_texture(&cc.egui_ctx, PathBuf::from(path))
+                {
                     log::warn!("Could not restore logo {path}: {e}");
+                    app.logos.push(None);
                 }
             }
+            // Keep paths/styles as saved; textures aligned by index.
+            while app.logos.len() < app.settings.logo_paths.len() {
+                app.logos.push(None);
+            }
+            app.logo_index = 0;
             app.logo_hold_left = app.settings.stage.logo_hold_secs.max(1.0);
         }
 
@@ -349,6 +415,18 @@ impl LiveVisualizerApp {
         Ok(())
     }
 
+    /// Load a texture into the playlist without mutating path lists (restore path).
+    fn load_logo_texture(
+        &mut self,
+        ctx: &egui::Context,
+        path: PathBuf,
+    ) -> anyhow::Result<()> {
+        let name = format!("logo_{}", self.logos.len());
+        let tex = media::load_texture_from_path(ctx, &path, &name)?;
+        self.logos.push(Some(tex));
+        Ok(())
+    }
+
     /// Append a logo to the playlist. If `select`, jump to it with a glitch.
     pub fn push_logo_with_ctx(
         &mut self,
@@ -359,17 +437,15 @@ impl LiveVisualizerApp {
         let name = format!("logo_{}", self.logos.len());
         let tex = media::load_texture_from_path(ctx, &path, &name)?;
         let path_str = path.display().to_string();
-        if !self.settings.logo_paths.iter().any(|p| p == &path_str) {
-            self.settings.logo_paths.push(path_str.clone());
-            self.settings
-                .logo_styles
-                .push(LogoStyle::from_stage(&self.settings.stage));
-        }
+        self.settings.logo_paths.push(path_str.clone());
+        self.settings
+            .logo_styles
+            .push(LogoStyle::from_stage(&self.settings.stage));
         self.settings.sync_logo_styles();
         self.settings.logo_path = Some(path_str);
-        self.logos.push(tex);
+        self.logos.push(Some(tex));
         if select {
-            let next = self.logos.len() - 1;
+            let next = self.playlist_len().saturating_sub(1);
             self.begin_logo_switch(next);
         }
         self.mark_settings_dirty();
@@ -377,8 +453,25 @@ impl LiveVisualizerApp {
         Ok(())
     }
 
+    pub fn push_center_effect(&mut self, id: &str) {
+        self.settings.logo_paths.push(id.to_string());
+        self.settings
+            .logo_styles
+            .push(LogoStyle::from_stage(&self.settings.stage));
+        self.settings.sync_logo_styles();
+        self.logos.push(None);
+        let next = self.playlist_len().saturating_sub(1);
+        self.begin_logo_switch(next);
+        self.mark_settings_dirty();
+        self.status_message = Some(format!("Added {}", crate::config::center_item_label(id)));
+    }
+
+    pub fn playlist_len(&self) -> usize {
+        self.settings.logo_paths.len().min(self.logos.len())
+    }
+
     pub fn remove_logo_at(&mut self, index: usize) {
-        if index >= self.logos.len() {
+        if index >= self.playlist_len() {
             return;
         }
         self.logos.remove(index);
@@ -389,12 +482,12 @@ impl LiveVisualizerApp {
             self.settings.logo_styles.remove(index);
         }
         self.settings.sync_logo_styles();
-        if self.logos.is_empty() {
+        if self.playlist_len() == 0 {
             self.logo_index = 0;
             self.logo_from_index = 0;
             self.settings.logo_path = None;
         } else {
-            self.logo_index %= self.logos.len();
+            self.logo_index %= self.playlist_len();
             self.logo_from_index = self.logo_index;
             self.settings.logo_path = self.settings.logo_paths.get(self.logo_index).cloned();
         }
@@ -420,55 +513,117 @@ impl LiveVisualizerApp {
     }
 
     pub fn select_logo(&mut self, index: usize) {
-        if index < self.logos.len() && index != self.logo_index {
-            self.begin_logo_switch(index);
+        if index >= self.playlist_len() {
+            return;
+        }
+        // Manual pick pins the item until Autoplay is turned back on.
+        let was_auto = self.settings.stage.logo_autoplay;
+        if was_auto {
+            self.settings.stage.logo_autoplay = false;
             self.mark_settings_dirty();
+            self.status_message = Some("Autoplay paused — item pinned".into());
+        }
+        if index != self.logo_index {
+            self.begin_logo_switch(index);
+            if !was_auto {
+                self.mark_settings_dirty();
+            }
         }
     }
 
     fn begin_logo_switch(&mut self, next: usize) {
-        if self.logos.is_empty() {
+        if self.playlist_len() == 0 {
             return;
         }
-        let next = next % self.logos.len();
-        self.logo_from_index = self.logo_index.min(self.logos.len() - 1);
+        let next = next % self.playlist_len();
+        if next == self.logo_index && !self.crt_phase.is_busy() {
+            return;
+        }
+        let from = self.logo_index.min(self.playlist_len() - 1);
+        self.logo_from_index = from;
+
+        let from_path = self.settings.logo_paths.get(from).map(|s| s.as_str()).unwrap_or("");
+        let to_path = self.settings.logo_paths.get(next).map(|s| s.as_str()).unwrap_or("");
+        let use_crt = self.settings.stage.crt_transition
+            && (is_center_effect(from_path) || is_center_effect(to_path));
+
+        let hold = self.settings.logo_style(next).hold_secs.max(0.0);
+        let hold = if hold > 0.2 {
+            hold
+        } else {
+            self.settings.stage.logo_hold_secs.max(1.0)
+        };
+
+        if use_crt {
+            self.crt_pending_index = next;
+            self.crt_phase = CrtPhase::Out(0.0);
+            self.logo_switch_glitch_t = 0.0;
+            // Keep showing `from` until CRT-out finishes; then swap + CRT-in.
+        } else {
+            self.logo_index = next;
+            self.logo_hold_left = hold;
+            self.crt_phase = CrtPhase::Idle;
+            self.logo_switch_glitch_t =
+                if self.settings.stage.logo_glitch && self.playlist_len() > 1 {
+                    1.0
+                } else {
+                    0.0
+                };
+            self.settings.logo_path = self.settings.logo_paths.get(next).cloned();
+        }
+    }
+
+    fn finish_crt_out(&mut self) {
+        let next = self.crt_pending_index % self.playlist_len().max(1);
         self.logo_index = next;
-        let hold = self
-            .settings
-            .logo_style(next)
-            .hold_secs
-            .max(0.0);
+        let hold = self.settings.logo_style(next).hold_secs.max(0.0);
         let hold = if hold > 0.2 {
             hold
         } else {
             self.settings.stage.logo_hold_secs.max(1.0)
         };
         self.logo_hold_left = hold;
-        // Transition glitch is its own envelope — not the beat glitch.
-        self.logo_switch_glitch_t =
-            if self.settings.stage.logo_glitch && self.logos.len() > 1 {
-                1.0
-            } else {
-                0.0
-            };
         self.settings.logo_path = self.settings.logo_paths.get(next).cloned();
+        self.crt_phase = CrtPhase::In(0.0);
     }
 
     fn tick_logo_cycle(&mut self, dt: f32) {
+        // CRT transition timeline.
+        const CRT_OUT_SECS: f32 = 0.28;
+        const CRT_IN_SECS: f32 = 0.32;
+        match self.crt_phase {
+            CrtPhase::Out(t) => {
+                let nt = t + dt / CRT_OUT_SECS;
+                if nt >= 1.0 {
+                    self.finish_crt_out();
+                } else {
+                    self.crt_phase = CrtPhase::Out(nt);
+                }
+            }
+            CrtPhase::In(t) => {
+                let nt = t + dt / CRT_IN_SECS;
+                if nt >= 1.0 {
+                    self.crt_phase = CrtPhase::Idle;
+                } else {
+                    self.crt_phase = CrtPhase::In(nt);
+                }
+            }
+            CrtPhase::Idle => {}
+        }
+
         if self.logo_switch_glitch_t > 0.0 {
-            // Slightly longer for a readable logo transition.
             self.logo_switch_glitch_t = (self.logo_switch_glitch_t - dt / 0.38).max(0.0);
         }
         if self.logo_beat_glitch_t > 0.0 {
             self.logo_beat_glitch_t = (self.logo_beat_glitch_t - dt / 0.22).max(0.0);
         }
 
-        // Beat glitch — separate from switch transition.
         let beat = self.features.beat;
         let style = self.settings.logo_style(self.logo_index);
         let want_beat_glitch = self.settings.stage.logo_glitch_on_beat && style.glitch_on_beat;
         if want_beat_glitch
-            && !self.logos.is_empty()
+            && self.playlist_len() > 0
+            && !self.crt_phase.is_busy()
             && beat > 0.55
             && self.last_beat_for_glitch < 0.35
         {
@@ -477,12 +632,15 @@ impl LiveVisualizerApp {
         }
         self.last_beat_for_glitch = beat;
 
-        if self.logos.len() < 2 {
+        if self.crt_phase.is_busy() {
+            return;
+        }
+        if !self.settings.stage.logo_autoplay || self.playlist_len() < 2 {
             return;
         }
         self.logo_hold_left -= dt;
         if self.logo_hold_left <= 0.0 {
-            let next = (self.logo_index + 1) % self.logos.len();
+            let next = (self.logo_index + 1) % self.playlist_len();
             self.begin_logo_switch(next);
         }
     }

@@ -19,6 +19,8 @@ pub enum ColorMode {
     Solid,
     /// Blend from low → high (see gradient colors).
     Gradient,
+    /// Rainbow that scrolls over time.
+    Cycle,
     /// Five frequency-band colors blended by position.
     Bands,
     Mono,
@@ -46,6 +48,47 @@ pub enum SpectrumLayout {
     Full,
     /// Lows / mids / highs mirrored on the left and right (no bass on the ring).
     Split,
+}
+
+/// Color style for the center oscilloscope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeColorMode {
+    #[default]
+    Solid,
+    /// Neon rainbow along the waveform.
+    Rainbow,
+    /// Blend `scope_color` → `scope_color_b`.
+    Gradient,
+    /// Rainbow that scrolls over time.
+    Cycle,
+}
+
+/// Playlist sentinel for a center oscilloscope slot (not a file path).
+pub const CENTER_SCOPE_ID: &str = ":scope:";
+/// Playlist sentinel for a mirrored condensed FFT slot.
+pub const CENTER_SPECTRUM_ID: &str = ":spectrum:";
+
+pub fn is_center_scope(path: &str) -> bool {
+    path == CENTER_SCOPE_ID
+}
+
+pub fn is_center_spectrum(path: &str) -> bool {
+    path == CENTER_SPECTRUM_ID
+}
+
+pub fn is_center_effect(path: &str) -> bool {
+    is_center_scope(path) || is_center_spectrum(path)
+}
+
+pub fn center_item_label(path: &str) -> String {
+    if is_center_scope(path) {
+        "Oscilloscope".into()
+    } else if is_center_spectrum(path) {
+        "Spectrum".into()
+    } else {
+        path.to_string()
+    }
 }
 
 /// Motion applied to the center logo / disc.
@@ -214,9 +257,40 @@ pub struct StageSettings {
     /// Center disc fill color (under the logo).
     #[serde(default = "default_disc_color")]
     pub disc_color: RgbColor,
+    #[serde(default = "default_scope_gain")]
+    pub scope_gain: f32,
+    #[serde(default = "default_scope_thickness")]
+    pub scope_thickness: f32,
+    #[serde(default)]
+    pub scope_color_mode: ScopeColorMode,
+    #[serde(default = "default_scope_color")]
+    pub scope_color: RgbColor,
+    #[serde(default = "default_scope_color_b")]
+    pub scope_color_b: RgbColor,
+    #[serde(default = "default_scope_cycle_speed")]
+    pub scope_cycle_speed: f32,
+    /// Separate look for the center spectrum bars.
+    #[serde(default = "default_scope_gain")]
+    pub spectrum_gain: f32,
+    #[serde(default = "default_scope_thickness")]
+    pub spectrum_thickness: f32,
+    #[serde(default)]
+    pub spectrum_color_mode: ScopeColorMode,
+    #[serde(default = "default_spectrum_color")]
+    pub spectrum_color: RgbColor,
+    #[serde(default = "default_spectrum_color_b")]
+    pub spectrum_color_b: RgbColor,
+    #[serde(default = "default_scope_cycle_speed")]
+    pub spectrum_cycle_speed: f32,
     /// Seconds each logo stays before cycling (multi-logo).
     #[serde(default = "default_logo_hold")]
     pub logo_hold_secs: f32,
+    /// When true, playlist advances on the hold timer.
+    #[serde(default = "default_true_stage")]
+    pub logo_autoplay: bool,
+    /// CRT-style flatten → line → center when switching to/from effects.
+    #[serde(default = "default_true_stage")]
+    pub crt_transition: bool,
     /// Glitch burst when switching logos (transition).
     #[serde(default = "default_true_stage")]
     pub logo_glitch: bool,
@@ -253,6 +327,34 @@ fn default_disc_color() -> RgbColor {
     RgbColor::new(4.0 / 255.0, 4.0 / 255.0, 6.0 / 255.0)
 }
 
+fn default_scope_gain() -> f32 {
+    1.15
+}
+
+fn default_scope_thickness() -> f32 {
+    2.0
+}
+
+fn default_scope_color() -> RgbColor {
+    RgbColor::new(0.25, 0.95, 1.0)
+}
+
+fn default_scope_color_b() -> RgbColor {
+    RgbColor::new(1.0, 0.3, 0.85)
+}
+
+fn default_spectrum_color() -> RgbColor {
+    RgbColor::new(0.35, 1.0, 0.55)
+}
+
+fn default_spectrum_color_b() -> RgbColor {
+    RgbColor::new(0.2, 0.75, 1.0)
+}
+
+fn default_scope_cycle_speed() -> f32 {
+    0.2
+}
+
 impl Default for StageSettings {
     fn default() -> Self {
         Self {
@@ -278,7 +380,21 @@ impl Default for StageSettings {
             logo_motion_amount: 0.35,
             disc_ticks: false,
             disc_color: default_disc_color(),
+            scope_gain: 1.15,
+            scope_thickness: 2.0,
+            scope_color_mode: ScopeColorMode::Solid,
+            scope_color: default_scope_color(),
+            scope_color_b: default_scope_color_b(),
+            scope_cycle_speed: 0.2,
+            spectrum_gain: 1.15,
+            spectrum_thickness: 2.2,
+            spectrum_color_mode: ScopeColorMode::Solid,
+            spectrum_color: default_spectrum_color(),
+            spectrum_color_b: default_spectrum_color_b(),
+            spectrum_cycle_speed: 0.15,
             logo_hold_secs: 8.0,
+            logo_autoplay: true,
+            crt_transition: true,
             logo_glitch: true,
             logo_glitch_amount: 1.0,
             logo_glitch_on_beat: true,
@@ -387,6 +503,27 @@ pub struct VisualizerSettings {
     /// How tall the mirrored bass “ear” spikes are in Split layout.
     #[serde(default = "default_ear_gain")]
     pub ear_gain: f32,
+    /// Number of bass ear lobes per side half → total 2 or 4 around the ring.
+    #[serde(default = "default_ear_count")]
+    pub ear_count: u8,
+    /// Where ears sit along each half (0 = top / 12 o'clock, 1 = bottom).
+    #[serde(default = "default_ear_angle")]
+    pub ear_angle: f32,
+    /// Angular width of each ear lobe.
+    #[serde(default = "default_ear_width")]
+    pub ear_width: f32,
+    /// Extra radial lift for ear spikes (0 = flush with ring base).
+    #[serde(default)]
+    pub ear_radius: f32,
+    /// Outer rim stroke width.
+    #[serde(default = "default_outline_width")]
+    pub outline_width: f32,
+    /// Extra spatial blur on the outer outline (0..1).
+    #[serde(default = "default_outline_smooth")]
+    pub outline_smooth: f32,
+    /// Scroll speed when `color_mode` is Cycle.
+    #[serde(default = "default_cycle_speed")]
+    pub cycle_speed: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -404,6 +541,17 @@ pub struct ParticleSettings {
     pub spread: f32,
     #[serde(default)]
     pub glow: f32,
+    /// Independent from the spectrum ring.
+    #[serde(default)]
+    pub color_mode: ColorMode,
+    #[serde(default = "default_particle_solid")]
+    pub solid: RgbColor,
+    #[serde(default = "default_particle_gradient_low")]
+    pub gradient_low: RgbColor,
+    #[serde(default = "default_particle_gradient_high")]
+    pub gradient_high: RgbColor,
+    #[serde(default = "default_cycle_speed")]
+    pub cycle_speed: f32,
 }
 
 fn default_true() -> bool {
@@ -412,6 +560,33 @@ fn default_true() -> bool {
 
 fn default_ear_gain() -> f32 {
     1.45
+}
+fn default_ear_count() -> u8 {
+    2
+}
+fn default_ear_angle() -> f32 {
+    0.20
+}
+fn default_ear_width() -> f32 {
+    0.075
+}
+fn default_outline_width() -> f32 {
+    1.45
+}
+fn default_outline_smooth() -> f32 {
+    0.45
+}
+fn default_cycle_speed() -> f32 {
+    0.18
+}
+fn default_particle_solid() -> RgbColor {
+    RgbColor::new(0.35, 0.85, 1.0)
+}
+fn default_particle_gradient_low() -> RgbColor {
+    RgbColor::new(1.0, 0.35, 0.55)
+}
+fn default_particle_gradient_high() -> RgbColor {
+    RgbColor::new(0.25, 0.9, 1.0)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -538,7 +713,7 @@ impl Default for VisualizerSettings {
             radius: 0.22,
             thickness: 2.0,
             sensitivity: 1.4,
-            smoothing: 0.28,
+            smoothing: 0.38,
             bass_response: 1.2,
             mid_response: 1.0,
             high_response: 0.9,
@@ -546,6 +721,13 @@ impl Default for VisualizerSettings {
             glow: 0.5,
             segment_count: 256,
             ear_gain: 1.45,
+            ear_count: 2,
+            ear_angle: 0.20,
+            ear_width: 0.075,
+            ear_radius: 0.06,
+            outline_width: 1.45,
+            outline_smooth: 0.45,
+            cycle_speed: 0.18,
         }
     }
 }
@@ -564,6 +746,11 @@ impl Default for ParticleSettings {
             beat_reaction: 1.2,
             spread: 0.8,
             glow: 0.4,
+            color_mode: ColorMode::Rainbow,
+            solid: default_particle_solid(),
+            gradient_low: default_particle_gradient_low(),
+            gradient_high: default_particle_gradient_high(),
+            cycle_speed: 0.18,
         }
     }
 }
@@ -658,11 +845,26 @@ impl Default for ColorSettings {
 impl ColorSettings {
     /// Sample a color for spectrum/FFT position `t` in 0..1 (bass → high).
     pub fn sample(&self, mode: ColorMode, t: f32, intensity: f32) -> RgbColor {
+        self.sample_cycled(mode, t, intensity, 0.0)
+    }
+
+    /// Like [`sample`](Self::sample), with a time offset for `ColorMode::Cycle`.
+    pub fn sample_cycled(
+        &self,
+        mode: ColorMode,
+        t: f32,
+        intensity: f32,
+        cycle: f32,
+    ) -> RgbColor {
         let boost = (intensity * self.rgb_intensity).clamp(0.35, 1.35);
         let t = t.fract();
         match mode {
             ColorMode::Rainbow => {
                 let (r, g, b) = neon_rainbow(t);
+                RgbColor::new(r, g, b).scale(boost.min(1.0))
+            }
+            ColorMode::Cycle => {
+                let (r, g, b) = neon_rainbow((t + cycle).fract());
                 RgbColor::new(r, g, b).scale(boost.min(1.0))
             }
             ColorMode::Solid => self.solid.scale(boost.min(1.0)),

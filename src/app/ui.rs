@@ -3,7 +3,8 @@
 use super::media::{cover_rect, fit_rect};
 use super::state::LiveVisualizerApp;
 use crate::config::{
-    BeatSettings, ColorMode, ColorSettings, LogoMotion, RgbColor, SpectrumLayout, SpectrumStyle,
+    BeatSettings, ColorMode, ColorSettings, LogoMotion, RgbColor, ScopeColorMode, SpectrumLayout,
+    SpectrumStyle, CENTER_SCOPE_ID, CENTER_SPECTRUM_ID,
 };
 use egui::epaint::Mesh;
 use egui::{self, Color32, Pos2, RichText, Sense, Shape, Stroke};
@@ -261,6 +262,18 @@ fn draw_beat_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                 .changed();
         }
 
+        ui.add_space(6.0);
+        ui.label(RichText::new("Disc bounce").small().strong());
+        {
+            let s = &mut app.settings.stage;
+            changed |= slider(ui, "Bass bounce", &mut s.bass_pulse, 0.0..=0.35)
+                .on_hover_text("Disc swell from kick / bass energy")
+                .changed();
+            changed |= slider(ui, "Beat bounce", &mut s.beat_pulse, 0.0..=0.45)
+                .on_hover_text("Disc punch on detected beats")
+                .changed();
+        }
+
         if ui
             .button("Reset disc bounce")
             .on_hover_text("Restores Bass bounce / Beat bounce on the logo disc")
@@ -430,8 +443,28 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                     .changed();
             });
             if v.layout == SpectrumLayout::Split {
-                changed |= slider(ui, "Bass ears", &mut v.ear_gain, 0.4..=2.4)
-                    .on_hover_text("How far the left/right bass spikes stick out")
+                ui.label(RichText::new("Bass ears").small().strong());
+                ui.horizontal(|ui| {
+                    changed |= ui
+                        .selectable_value(&mut v.ear_count, 2, "2")
+                        .on_hover_text("One ear per side (~2 / 10 o'clock)")
+                        .changed();
+                    changed |= ui
+                        .selectable_value(&mut v.ear_count, 4, "4")
+                        .on_hover_text("Two ears per side")
+                        .changed();
+                });
+                changed |= slider(ui, "Ear height", &mut v.ear_gain, 0.4..=2.4)
+                    .on_hover_text("How far the bass spikes stick out")
+                    .changed();
+                changed |= slider(ui, "Ear angle", &mut v.ear_angle, 0.08..=0.42)
+                    .on_hover_text("Where ears sit along the half-ring (lower = closer to top)")
+                    .changed();
+                changed |= slider(ui, "Ear width", &mut v.ear_width, 0.04..=0.14)
+                    .on_hover_text("How wide each lobe is")
+                    .changed();
+                changed |= slider(ui, "Ear lift", &mut v.ear_radius, 0.0..=0.28)
+                    .on_hover_text("Push ear bases outward from the disc")
                     .changed();
             }
 
@@ -442,6 +475,7 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                     (ColorMode::Rainbow, "Rainbow", "Classic neon spectrum"),
                     (ColorMode::Solid, "Solid", "One color for the whole ring"),
                     (ColorMode::Gradient, "Gradient", "Blend from low → high"),
+                    (ColorMode::Cycle, "Cycle", "Scrolling rainbow"),
                     (ColorMode::Bands, "Bands", "Custom color per frequency band"),
                     (ColorMode::Mono, "Mono", "Grayscale"),
                 ] {
@@ -470,14 +504,28 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
 
         {
             let mode = app.settings.visualizer.color_mode;
-            let colors = &mut app.settings.colors;
             match mode {
                 ColorMode::Solid => {
-                    changed |= color_picker_row(ui, "Color", &mut colors.solid);
+                    changed |=
+                        color_picker_row(ui, "Color", &mut app.settings.colors.solid);
                 }
                 ColorMode::Gradient => {
-                    changed |= color_picker_row(ui, "Low (bass)", &mut colors.gradient_low);
-                    changed |= color_picker_row(ui, "High", &mut colors.gradient_high);
+                    changed |= color_picker_row(
+                        ui,
+                        "Low (bass)",
+                        &mut app.settings.colors.gradient_low,
+                    );
+                    changed |=
+                        color_picker_row(ui, "High", &mut app.settings.colors.gradient_high);
+                }
+                ColorMode::Cycle => {
+                    changed |= slider(
+                        ui,
+                        "Cycle speed",
+                        &mut app.settings.visualizer.cycle_speed,
+                        0.02..=1.5,
+                    )
+                    .changed();
                 }
                 ColorMode::Bands => {
                     ui.label(
@@ -485,17 +533,32 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                             .small()
                             .color(Color32::GRAY),
                     );
-                    changed |= color_picker_row(ui, "Bass", &mut colors.band_bass);
-                    changed |= color_picker_row(ui, "Low mid", &mut colors.band_low_mid);
-                    changed |= color_picker_row(ui, "Mid", &mut colors.band_mid);
-                    changed |= color_picker_row(ui, "High mid", &mut colors.band_high_mid);
-                    changed |= color_picker_row(ui, "High", &mut colors.band_high);
+                    changed |=
+                        color_picker_row(ui, "Bass", &mut app.settings.colors.band_bass);
+                    changed |= color_picker_row(
+                        ui,
+                        "Low mid",
+                        &mut app.settings.colors.band_low_mid,
+                    );
+                    changed |= color_picker_row(ui, "Mid", &mut app.settings.colors.band_mid);
+                    changed |= color_picker_row(
+                        ui,
+                        "High mid",
+                        &mut app.settings.colors.band_high_mid,
+                    );
+                    changed |=
+                        color_picker_row(ui, "High", &mut app.settings.colors.band_high);
                 }
                 _ => {}
             }
-            changed |= slider(ui, "Color intensity", &mut colors.rgb_intensity, 0.3..=1.6)
-                .on_hover_text("Brightness of spectrum / FFT colors")
-                .changed();
+            changed |= slider(
+                ui,
+                "Color intensity",
+                &mut app.settings.colors.rgb_intensity,
+                0.3..=1.6,
+            )
+            .on_hover_text("Brightness of spectrum / FFT colors")
+            .changed();
         }
 
         {
@@ -503,7 +566,15 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
             changed |= slider(ui, "Thickness", &mut v.thickness, 0.5..=6.0).changed();
             changed |= slider(ui, "Max length", &mut v.max_bar_length, 0.15..=0.85).changed();
             changed |= slider(ui, "Glow", &mut v.glow, 0.0..=1.5).changed();
-            changed |= slider(ui, "Smoothing", &mut v.smoothing, 0.05..=0.9).changed();
+            changed |= slider(ui, "Smoothing", &mut v.smoothing, 0.05..=0.95)
+                .on_hover_text("Spatial blur on the ring body")
+                .changed();
+            changed |= slider(ui, "Outline width", &mut v.outline_width, 0.5..=3.5)
+                .on_hover_text("Outer rim stroke")
+                .changed();
+            changed |= slider(ui, "Outline smooth", &mut v.outline_smooth, 0.0..=1.0)
+                .on_hover_text("Extra blur on the outer outline for a cleaner edge")
+                .changed();
         }
         if changed {
             app.mark_settings_dirty();
@@ -513,11 +584,6 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
 
 fn draw_particles_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Particles", false, |ui| {
-        ui.label(
-            RichText::new("Colors follow the spectrum ring mode")
-                .small()
-                .color(Color32::GRAY),
-        );
         let mut changed = false;
         {
             let p = app.particles.settings_mut();
@@ -536,6 +602,32 @@ fn draw_particles_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
             changed |= slider(ui, "Opacity", &mut p.opacity, 0.1..=1.0).changed();
             changed |= slider(ui, "Glow", &mut p.glow, 0.0..=1.5).changed();
             changed |= slider(ui, "Gravity", &mut p.gravity, -1.0..=1.0).changed();
+
+            ui.add_space(6.0);
+            ui.label(RichText::new("Particle color").small().strong());
+            ui.horizontal_wrapped(|ui| {
+                for (mode, label) in [
+                    (ColorMode::Rainbow, "Rainbow"),
+                    (ColorMode::Solid, "Solid"),
+                    (ColorMode::Gradient, "Gradient"),
+                    (ColorMode::Cycle, "Cycle"),
+                ] {
+                    changed |= ui.selectable_value(&mut p.color_mode, mode, label).changed();
+                }
+            });
+            match p.color_mode {
+                ColorMode::Solid => {
+                    changed |= color_picker_row(ui, "Color", &mut p.solid);
+                }
+                ColorMode::Gradient => {
+                    changed |= color_picker_row(ui, "Color A", &mut p.gradient_low);
+                    changed |= color_picker_row(ui, "Color B", &mut p.gradient_high);
+                }
+                ColorMode::Cycle => {
+                    changed |= slider(ui, "Cycle speed", &mut p.cycle_speed, 0.02..=1.5).changed();
+                }
+                _ => {}
+            }
         }
         if changed {
             let s = app.particles.settings().clone();
@@ -580,12 +672,26 @@ fn draw_background_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
 
 fn draw_logo_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Center logo", true, |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.button("Add logo…").clicked() {
                 app.pick_logo(ui.ctx());
             }
             if ui.button("Add many…").clicked() {
                 app.pick_logos(ui.ctx());
+            }
+            if ui
+                .button("Add scope")
+                .on_hover_text("Oscilloscope as a playlist item you can cycle into")
+                .clicked()
+            {
+                app.push_center_effect(CENTER_SCOPE_ID);
+            }
+            if ui
+                .button("Add spectrum")
+                .on_hover_text("Mirrored condensed FFT as a playlist item")
+                .clicked()
+            {
+                app.push_center_effect(CENTER_SPECTRUM_ID);
             }
             if ui.button("Clear all").clicked() {
                 app.clear_logo();
@@ -599,10 +705,12 @@ fn draw_logo_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
             for (i, path) in paths.iter().enumerate() {
                 ui.horizontal(|ui| {
                     let selected = i == active;
-                    if ui
-                        .selectable_label(selected, truncate_path(path, 34))
-                        .clicked()
-                    {
+                    let label = if crate::config::is_center_effect(path) {
+                        crate::config::center_item_label(path)
+                    } else {
+                        truncate_path(path, 34)
+                    };
+                    if ui.selectable_label(selected, label).clicked() {
                         app.select_logo(i);
                     }
                     if ui.small_button("✕").clicked() {
@@ -611,34 +719,123 @@ fn draw_logo_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                 });
             }
             if paths.len() > 1 {
-                ui.label(
-                    RichText::new(format!(
-                        "Cycling {} logos · next in {:.0}s",
+                let status = if app.settings.stage.logo_autoplay {
+                    format!(
+                        "Autoplay · {} items · next in {:.0}s",
                         paths.len(),
                         app.logo_hold_left.max(0.0)
-                    ))
-                    .small()
-                    .color(Color32::GRAY),
-                );
+                    )
+                } else {
+                    format!("{} items · pinned (enable Autoplay to rotate)", paths.len())
+                };
+                ui.label(RichText::new(status).small().color(Color32::GRAY));
             }
         }
 
-        let mut changed = false;
-        {
+        let playlist_len = app.playlist_len();
+        let (mut changed, resume_hold) = {
+            let mut changed = false;
             let s = &mut app.settings.stage;
+            ui.add_space(4.0);
+            ui.label(RichText::new("Oscilloscope look").small().strong());
+            changed |= slider(ui, "Scope gain", &mut s.scope_gain, 0.2..=3.0).changed();
+            changed |=
+                slider(ui, "Scope thickness", &mut s.scope_thickness, 0.8..=5.0).changed();
+            ui.horizontal_wrapped(|ui| {
+                for (mode, label) in [
+                    (ScopeColorMode::Solid, "Solid"),
+                    (ScopeColorMode::Rainbow, "Rainbow"),
+                    (ScopeColorMode::Gradient, "Gradient"),
+                    (ScopeColorMode::Cycle, "Cycle"),
+                ] {
+                    changed |= ui
+                        .selectable_value(&mut s.scope_color_mode, mode, label)
+                        .changed();
+                }
+            });
+            match s.scope_color_mode {
+                ScopeColorMode::Solid => {
+                    changed |= color_picker_row(ui, "Scope color", &mut s.scope_color);
+                }
+                ScopeColorMode::Gradient => {
+                    changed |= color_picker_row(ui, "Scope A", &mut s.scope_color);
+                    changed |= color_picker_row(ui, "Scope B", &mut s.scope_color_b);
+                }
+                ScopeColorMode::Cycle => {
+                    changed |=
+                        slider(ui, "Scope cycle", &mut s.scope_cycle_speed, 0.02..=1.5).changed();
+                }
+                ScopeColorMode::Rainbow => {}
+            }
+
+            ui.add_space(6.0);
+            ui.label(RichText::new("Spectrum look").small().strong());
+            changed |= slider(ui, "Spec gain", &mut s.spectrum_gain, 0.2..=3.0).changed();
+            changed |=
+                slider(ui, "Spec thickness", &mut s.spectrum_thickness, 0.8..=5.0).changed();
+            ui.horizontal_wrapped(|ui| {
+                for (mode, label) in [
+                    (ScopeColorMode::Solid, "Solid"),
+                    (ScopeColorMode::Rainbow, "Rainbow"),
+                    (ScopeColorMode::Gradient, "Gradient"),
+                    (ScopeColorMode::Cycle, "Cycle"),
+                ] {
+                    changed |= ui
+                        .selectable_value(&mut s.spectrum_color_mode, mode, label)
+                        .changed();
+                }
+            });
+            match s.spectrum_color_mode {
+                ScopeColorMode::Solid => {
+                    changed |= color_picker_row(ui, "Spec color", &mut s.spectrum_color);
+                }
+                ScopeColorMode::Gradient => {
+                    changed |= color_picker_row(ui, "Spec A", &mut s.spectrum_color);
+                    changed |= color_picker_row(ui, "Spec B", &mut s.spectrum_color_b);
+                }
+                ScopeColorMode::Cycle => {
+                    changed |= slider(ui, "Spec cycle", &mut s.spectrum_cycle_speed, 0.02..=1.5)
+                        .changed();
+                }
+                ScopeColorMode::Rainbow => {}
+            }
+
             ui.add_space(4.0);
             ui.label(RichText::new("Shared").small().strong());
             changed |= slider(ui, "Disc size", &mut s.disc_radius, 0.06..=0.35).changed();
             changed |= color_picker_row(ui, "Disc color", &mut s.disc_color);
-            changed |= slider(ui, "Bass bounce", &mut s.bass_pulse, 0.0..=0.35).changed();
-            changed |= slider(ui, "Beat bounce", &mut s.beat_pulse, 0.0..=0.45).changed();
             changed |= ui.checkbox(&mut s.disc_ticks, "Disc tick marks").changed();
+
+            ui.add_space(4.0);
+            ui.label(RichText::new("Playlist").small().strong());
+            let was_auto = s.logo_autoplay;
+            changed |= ui
+                .checkbox(&mut s.logo_autoplay, "Autoplay")
+                .on_hover_text("Rotate through playlist items. Selecting one turns this off.")
+                .changed();
+            let resume_autoplay = s.logo_autoplay && !was_auto;
+            if playlist_len > 1 {
+                changed |= slider(ui, "Default hold", &mut s.logo_hold_secs, 2.0..=30.0)
+                    .on_hover_text("Seconds each item stays when Autoplay is on")
+                    .changed();
+            }
+            let resume_hold = if resume_autoplay {
+                Some(s.logo_hold_secs.max(1.0))
+            } else {
+                None
+            };
 
             ui.add_space(4.0);
             ui.label(RichText::new("Transitions").small().strong());
             changed |= ui
+                .checkbox(&mut s.crt_transition, "CRT effect wipe")
+                .on_hover_text(
+                    "TV turn-off style when switching to/from Scope or Spectrum (flatten → line → center)",
+                )
+                .changed();
+            changed |= ui
                 .checkbox(&mut s.logo_glitch, "Glitch transition")
-                .on_hover_text("RGB tear when switching logos (separate from beat glitch)")
+                .on_hover_text("RGB tear for image switches (when CRT wipe is not used)")
                 .changed();
             if s.logo_glitch {
                 changed |= slider(ui, "Transition amount", &mut s.logo_glitch_amount, 0.2..=1.5)
@@ -655,93 +852,100 @@ fn draw_logo_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                 changed |=
                     slider(ui, "Beat amount", &mut s.logo_beat_glitch_amount, 0.2..=1.5).changed();
             }
-            if app.logos.len() > 1 {
-                changed |= slider(ui, "Default hold", &mut s.logo_hold_secs, 2.0..=30.0)
-                    .on_hover_text("Used when a logo's own hold is 0")
-                    .changed();
-            }
+            (changed, resume_hold)
+        };
+        if let Some(hold) = resume_hold {
+            app.logo_hold_left = hold;
         }
 
-        if !app.logos.is_empty() {
+        if playlist_len > 0 {
             let idx = app.logo_index.min(app.settings.logo_paths.len().saturating_sub(1));
             app.settings.sync_logo_styles();
+            let active_path = app.settings.logo_paths.get(idx).cloned().unwrap_or_default();
+            let is_image = !crate::config::is_center_effect(&active_path);
             ui.add_space(8.0);
             ui.label(
-                RichText::new(format!("This logo (#{})", idx + 1))
-                    .small()
-                    .strong(),
+                RichText::new(format!(
+                    "This item (#{}) — {}",
+                    idx + 1,
+                    crate::config::center_item_label(&active_path)
+                ))
+                .small()
+                .strong(),
             );
             {
                 let style = app.settings.logo_style_mut(idx);
-                changed |= slider(ui, "Size", &mut style.size, 0.25..=1.0).changed();
-                changed |= slider(ui, "Offset X", &mut style.offset_x, -0.45..=0.45).changed();
-                changed |= slider(ui, "Offset Y", &mut style.offset_y, -0.45..=0.45).changed();
-                ui.horizontal(|ui| {
-                    let step = 0.02_f32;
-                    if ui.button("←").clicked() {
-                        style.offset_x = (style.offset_x - step).max(-0.45);
-                        changed = true;
-                    }
-                    if ui.button("→").clicked() {
-                        style.offset_x = (style.offset_x + step).min(0.45);
-                        changed = true;
-                    }
-                    if ui.button("↑").clicked() {
-                        style.offset_y = (style.offset_y - step).max(-0.45);
-                        changed = true;
-                    }
-                    if ui.button("↓").clicked() {
-                        style.offset_y = (style.offset_y + step).min(0.45);
-                        changed = true;
-                    }
-                    if ui.button("Center").clicked() {
-                        style.offset_x = 0.0;
-                        style.offset_y = 0.0;
-                        changed = true;
-                    }
-                });
-
-                ui.add_space(4.0);
-                ui.label(RichText::new("Motion").small().strong());
-                ui.horizontal_wrapped(|ui| {
-                    for (mode, label) in [
-                        (LogoMotion::None, "None"),
-                        (LogoMotion::Spin, "Spin"),
-                        (LogoMotion::BeatSpin, "Beat spin"),
-                        (LogoMotion::Wobble, "Wobble"),
-                        (LogoMotion::Pendulum, "Pendulum"),
-                    ] {
-                        if ui.selectable_value(&mut style.motion, mode, label).changed() {
+                if is_image {
+                    changed |= slider(ui, "Size", &mut style.size, 0.25..=1.0).changed();
+                    changed |= slider(ui, "Offset X", &mut style.offset_x, -0.45..=0.45).changed();
+                    changed |= slider(ui, "Offset Y", &mut style.offset_y, -0.45..=0.45).changed();
+                    ui.horizontal(|ui| {
+                        let step = 0.02_f32;
+                        if ui.button("←").clicked() {
+                            style.offset_x = (style.offset_x - step).max(-0.45);
                             changed = true;
                         }
+                        if ui.button("→").clicked() {
+                            style.offset_x = (style.offset_x + step).min(0.45);
+                            changed = true;
+                        }
+                        if ui.button("↑").clicked() {
+                            style.offset_y = (style.offset_y - step).max(-0.45);
+                            changed = true;
+                        }
+                        if ui.button("↓").clicked() {
+                            style.offset_y = (style.offset_y + step).min(0.45);
+                            changed = true;
+                        }
+                        if ui.button("Center").clicked() {
+                            style.offset_x = 0.0;
+                            style.offset_y = 0.0;
+                            changed = true;
+                        }
+                    });
+
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Motion").small().strong());
+                    ui.horizontal_wrapped(|ui| {
+                        for (mode, label) in [
+                            (LogoMotion::None, "None"),
+                            (LogoMotion::Spin, "Spin"),
+                            (LogoMotion::BeatSpin, "Beat spin"),
+                            (LogoMotion::Wobble, "Wobble"),
+                            (LogoMotion::Pendulum, "Pendulum"),
+                        ] {
+                            if ui.selectable_value(&mut style.motion, mode, label).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+                    if style.motion != LogoMotion::None {
+                        changed |= slider(ui, "Speed", &mut style.spin_speed, 0.02..=1.5).changed();
+                        if matches!(style.motion, LogoMotion::Wobble | LogoMotion::Pendulum) {
+                            changed |=
+                                slider(ui, "Amount", &mut style.motion_amount, 0.05..=1.0).changed();
+                        }
                     }
-                });
-                if style.motion != LogoMotion::None {
-                    changed |= slider(ui, "Speed", &mut style.spin_speed, 0.02..=1.5).changed();
-                    if matches!(style.motion, LogoMotion::Wobble | LogoMotion::Pendulum) {
-                        changed |=
-                            slider(ui, "Amount", &mut style.motion_amount, 0.05..=1.0).changed();
+
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Look").small().strong());
+                    changed |= color_picker_tint(ui, "Tint", style);
+                    changed |= slider(ui, "Brightness", &mut style.brightness, 0.2..=1.8).changed();
+                    changed |= slider(ui, "Opacity", &mut style.opacity, 0.15..=1.0).changed();
+                    if ui.small_button("Reset tint").clicked() {
+                        set_style_tint(style, 1.0, 1.0, 1.0, 1.0);
+                        changed = true;
                     }
                 }
 
-                ui.add_space(4.0);
-                ui.label(RichText::new("Look").small().strong());
-                changed |= color_picker_tint(ui, "Tint", style);
-                changed |= slider(ui, "Brightness", &mut style.brightness, 0.2..=1.8).changed();
-                changed |= slider(ui, "Opacity", &mut style.opacity, 0.15..=1.0).changed();
-                if ui.small_button("Reset tint").clicked() {
-                    set_style_tint(style, 1.0, 1.0, 1.0, 1.0);
-                    changed = true;
-                }
-
-                if app.logos.len() > 1 {
+                if playlist_len > 1 {
                     ui.add_space(4.0);
                     changed |= slider(ui, "Hold (sec)", &mut style.hold_secs, 0.0..=30.0)
                         .on_hover_text("0 = use default hold")
                         .changed();
                 }
                 changed |= ui
-                    .checkbox(&mut style.glitch_on_beat, "Beat glitch (this logo)")
+                    .checkbox(&mut style.glitch_on_beat, "Beat glitch (this item)")
                     .changed();
             }
         }
@@ -875,8 +1079,8 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
     let dt = (app.timing.frame_ms / 1000.0).clamp(1.0 / 240.0, 1.0 / 20.0);
     app.tick_particles(rect.center(), dt);
 
-    let features = &app.features;
-    let timing = &app.timing;
+    let features = app.features.clone();
+    let timing = app.timing.clone();
     let stage = app.stage().clone();
     let vis = app.settings.visualizer.clone();
     let colors = app.settings.colors.clone();
@@ -907,17 +1111,31 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
 
     let min_dim = rect.height().min(rect.width());
     let center = rect.center();
+    let time = ui.input(|i| i.time as f32);
     // Whole disc + logo + ring bounce together (Trap Nation style).
-    // Kick envelope + beat pulse do the hit; sustained bass is a light swell only.
-    let pulse = 1.0
-        + features.kick * stage.bass_pulse * 1.15
-        + features.beat * stage.beat_pulse
-        + features.bass * stage.bass_pulse * 0.22;
+    // Soft floors + curve so quiet tracks don't jitter the outline.
+    let kick_s = features.kick.powf(1.12);
+    let beat_s = features.beat.powf(1.05);
+    let bass_s = (features.bass - 0.1).max(0.0).powf(1.1);
+    let pulse = (1.0
+        + kick_s * stage.bass_pulse * 1.05
+        + beat_s * stage.beat_pulse * 0.92
+        + bass_s * stage.bass_pulse * 0.14)
+        .clamp(1.0, 1.42);
     let disc_r = (min_dim * stage.disc_radius * pulse).max(24.0);
 
-    app.particles.draw(&painter, color_mode, &colors);
+    app.particles.draw(&painter);
 
-    draw_spectrum(&painter, center, disc_r, min_dim, features, &vis, &colors);
+    draw_spectrum(
+        &painter,
+        center,
+        disc_r,
+        min_dim,
+        &features,
+        &vis,
+        &colors,
+        time,
+    );
 
     // Disc under the logo — customizable fill.
     let disc_rgb = stage.disc_color.to_srgb();
@@ -945,52 +1163,56 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
         draw_disc_ticks(&painter, center, disc_r, logo_angle);
     }
 
-    if !app.logos.is_empty() {
-        let style = app.active_logo_style();
-        let logo_center = egui::pos2(
-            center.x + style.offset_x * disc_r,
-            center.y + style.offset_y * disc_r,
-        );
-        let cur_idx = app.logo_index.min(app.logos.len() - 1);
-        let from_idx = app.logo_from_index.min(app.logos.len() - 1);
-        let cur = &app.logos[cur_idx];
-        let logo_rect = fit_rect(
-            egui::Rect::from_center_size(
-                logo_center,
-                egui::vec2(disc_r * 2.0 * style.size, disc_r * 2.0 * style.size),
-            ),
-            cur.size,
-        );
-        let tint = logo_style_tint(&style);
-        let switch_g = app.logo_switch_glitch_t * stage.logo_glitch_amount.clamp(0.0, 1.5);
-        let beat_g = app.logo_beat_glitch_t * stage.logo_beat_glitch_amount.clamp(0.0, 1.5);
-        let cur_tex = cur.texture.id();
-        let prev_tex = if from_idx != cur_idx {
-            Some(app.logos[from_idx].texture.id())
-        } else {
-            None
+    let dt = (app.timing.frame_ms / 1000.0).clamp(1.0 / 240.0, 1.0 / 20.0);
+    if app.playlist_len() > 0 {
+        use crate::app::state::CrtPhase;
+        let (sx, sy, alpha) = app.crt_phase.factors();
+        let draw_idx = match app.crt_phase {
+            CrtPhase::Out(_) => app.logo_from_index.min(app.playlist_len() - 1),
+            _ => app.logo_index.min(app.playlist_len() - 1),
         };
-        // Transition glitch first (shows previous logo tearing out).
-        // Beat glitch is standalone — only RGB-tears the current logo.
-        if switch_g > 0.04 {
-            paint_logo_glitch(
-                &painter,
-                cur_tex,
-                prev_tex,
-                logo_rect,
-                logo_angle,
-                tint,
-                switch_g,
+        draw_playlist_item(
+            &painter,
+            app,
+            draw_idx,
+            center,
+            disc_r,
+            logo_angle,
+            &features,
+            &stage,
+            time,
+            dt,
+            sx,
+            sy,
+            alpha,
+        );
+        // Bright CRT scanline while flattened.
+        if app.crt_phase.is_busy() && sy < 0.12 {
+            let line_w = disc_r * 2.0 * sx.clamp(0.04, 1.0);
+            let glow = ((1.0 - sy / 0.12) * 200.0) as u8;
+            painter.line_segment(
+                [
+                    egui::pos2(center.x - line_w * 0.5, center.y),
+                    egui::pos2(center.x + line_w * 0.5, center.y),
+                ],
+                Stroke::new(
+                    2.5_f32,
+                    Color32::from_rgba_unmultiplied(220, 240, 255, glow),
+                ),
             );
-        } else if beat_g > 0.04 {
-            paint_logo_glitch(&painter, cur_tex, None, logo_rect, logo_angle, tint, beat_g);
-        } else {
-            paint_rotated_image(&painter, cur_tex, logo_rect, logo_angle, tint);
+            if sx < 0.15 {
+                let r = (4.0 + (1.0 - sx / 0.15) * 5.0).max(2.0);
+                painter.circle_filled(
+                    center,
+                    r,
+                    Color32::from_rgba_unmultiplied(230, 245, 255, glow),
+                );
+            }
         }
     }
 
     if app.show_fft_debug {
-        draw_fft_graph(&painter, rect, features, color_mode, &colors);
+        draw_fft_graph(&painter, rect, &features, color_mode, &colors);
     }
 
     if show_debug {
@@ -1019,6 +1241,7 @@ fn draw_spectrum(
     features: &crate::audio::AudioFeatures,
     vis: &crate::config::VisualizerSettings,
     colors: &ColorSettings,
+    time: f32,
 ) {
     let spectrum = &features.spectrum;
     if spectrum.is_empty() {
@@ -1027,17 +1250,73 @@ fn draw_spectrum(
 
     let n = spectrum.len();
     let mut smoothed = spectrum.clone();
-    let smooth_amt = (vis.smoothing * 0.32).clamp(0.0, 0.4);
+    let wrap_ring = vis.layout == SpectrumLayout::Full;
+
+    // Soft gate: only squash bins whose neighbors are also quiet.
+    // Punching a hole next to a live bin tessellates as a radial "laser".
+    let gate = (0.035 + (1.0 - features.rms).clamp(0.0, 1.0) * 0.05).clamp(0.03, 0.1);
+    let gated = smoothed.clone();
+    for i in 0..n {
+        let m = gated[i];
+        if m >= gate {
+            continue;
+        }
+        let left = if i == 0 {
+            if wrap_ring {
+                gated[n - 1]
+            } else {
+                gated[i]
+            }
+        } else {
+            gated[i - 1]
+        };
+        let right = if i + 1 >= n {
+            if wrap_ring {
+                gated[0]
+            } else {
+                gated[i]
+            }
+        } else {
+            gated[i + 1]
+        };
+        if left.max(right) < gate * 1.8 {
+            let u = (m / gate).clamp(0.0, 1.0);
+            smoothed[i] = m * u * u;
+        }
+    }
+
+    let smooth_amt = (vis.smoothing * 0.42).clamp(0.0, 0.55);
     if smooth_amt > 0.02 {
         let prev = smoothed.clone();
         for i in 0..n {
             let t = i as f32 / n as f32;
-            let amt = if t < 0.18 { smooth_amt * 0.22 } else { smooth_amt };
-            let a = if i == 0 { prev[i] } else { prev[i - 1] };
+            // Keep ears a bit sharper than the rest of the ring.
+            let amt = if t < 0.22 || t > 0.78 {
+                smooth_amt * 0.35
+            } else {
+                smooth_amt
+            };
+            let a = if i == 0 {
+                if wrap_ring {
+                    prev[n - 1]
+                } else {
+                    prev[i]
+                }
+            } else {
+                prev[i - 1]
+            };
             let b = prev[i];
-            let c = if i + 1 >= n { prev[i] } else { prev[i + 1] };
+            let c = if i + 1 >= n {
+                if wrap_ring {
+                    prev[0]
+                } else {
+                    prev[i]
+                }
+            } else {
+                prev[i + 1]
+            };
             let blended = b * (1.0 - amt) + (a + c) * 0.5 * amt;
-            smoothed[i] = blended.max(b * 0.92);
+            smoothed[i] = blended.max(b * 0.88);
         }
     }
 
@@ -1052,7 +1331,18 @@ fn draw_spectrum(
     let thickness = vis.thickness.clamp(0.8, 4.0);
     let intensity = 0.9 * app_color_intensity(vis);
     let glow = vis.glow * 0.4;
-    let pts = collect_ring_points(&smoothed, vis, features);
+    let cycle = time * vis.cycle_speed.clamp(0.0, 3.0);
+    let ear_lift = disc_r * vis.ear_radius.clamp(0.0, 0.35);
+    let mut pts = collect_ring_points(&smoothed, vis, features);
+
+    // Extra outline-oriented blur. `pts` always go all the way around the disc.
+    let outline_s = vis.outline_smooth.clamp(0.0, 1.0);
+    if outline_s > 0.05 {
+        blur_ring_mags(&mut pts, outline_s, true);
+    }
+    // Fill isolated dropouts so a near-zero bin next to live neighbors
+    // can't form a radial spoke. Wide quiet regions (and silence) stay down.
+    lift_ring_notches(&mut pts, true);
 
     match vis.style {
         SpectrumStyle::Bars => {
@@ -1066,6 +1356,8 @@ fn draw_spectrum(
                 intensity,
                 vis.color_mode,
                 colors,
+                cycle,
+                ear_lift,
                 &pts,
             );
         }
@@ -1079,8 +1371,11 @@ fn draw_spectrum(
                 intensity,
                 vis.color_mode,
                 colors,
+                cycle,
                 matches!(vis.style, SpectrumStyle::SoftGlow),
                 vis.layout == SpectrumLayout::Full,
+                vis.outline_width.clamp(0.4, 4.5),
+                ear_lift,
                 &pts,
             );
         }
@@ -1092,6 +1387,8 @@ struct SpecPoint {
     t: f32,
     mag: f32,
     hue: f32,
+    /// 0..1 ear lobe weight — lifts radius for bass spikes.
+    ear: f32,
 }
 
 fn collect_ring_points(
@@ -1108,29 +1405,40 @@ fn collect_ring_points(
                     t,
                     mag: smoothed[i].clamp(0.0, 1.2),
                     hue: t,
+                    ear: 0.0,
                 }
             })
             .collect(),
         SpectrumLayout::Split => {
-            // Full mirrored circle: lows at the bottom, highs toward the top,
-            // bass/sub as ear lobes at ~2 o'clock and 10 o'clock.
             let cut = ((n as f32) * 0.20) as usize;
             let rest = (n - cut).max(8);
             let ear_gain = vis.ear_gain.clamp(0.2, 2.8);
-            let punch = (features.bass * 0.55 + features.kick * 0.95).min(1.25);
+            let ear_count = if vis.ear_count >= 4 { 4 } else { 2 };
+            let ear_angle = vis.ear_angle.clamp(0.08, 0.42);
+            let ear_width = vis.ear_width.clamp(0.035, 0.16);
+            let punch = (features.bass * 0.5 + features.kick * 0.95).min(1.2);
             (0..n)
                 .map(|i| {
                     let t = (i as f32 + 0.5) / n as f32;
                     let u = if t <= 0.5 { t * 2.0 } else { (1.0 - t) * 2.0 };
+                    let (mag, ear) = trap_nation_mag(
+                        smoothed, cut, rest, u, punch, ear_gain, ear_count, ear_angle, ear_width,
+                    );
                     SpecPoint {
                         t,
-                        mag: trap_nation_mag(smoothed, cut, rest, u, punch, ear_gain),
+                        mag,
                         hue: (0.06 + u * 0.82).clamp(0.0, 1.0),
+                        ear,
                     }
                 })
                 .collect()
         }
     }
+}
+
+fn ear_gauss(u: f32, center: f32, width: f32) -> f32 {
+    let x = (u - center) / width.max(0.02);
+    (-x * x * 2.1).exp()
 }
 
 fn trap_nation_mag(
@@ -1140,21 +1448,140 @@ fn trap_nation_mag(
     u: f32,
     punch: f32,
     ear_gain: f32,
-) -> f32 {
-    // Ear peak ~36° off 12 o'clock → 2 o'clock / 10 o'clock.
-    let ear_c = 0.20_f32;
-    let ear_w = 0.075_f32;
-    let x = (u - ear_c) / ear_w;
-    let ear = (-x * x * 2.1).exp();
+    ear_count: u8,
+    ear_angle: f32,
+    ear_width: f32,
+) -> (f32, f32) {
+    let ear = if ear_count >= 4 {
+        let c1 = (ear_angle * 0.72).clamp(0.08, 0.32);
+        let c2 = (ear_angle * 1.38).clamp(0.18, 0.48);
+        let w = ear_width;
+        ear_gauss(u, c1, w) * 0.92 + ear_gauss(u, c2, w * 0.95) * 0.78
+    } else {
+        ear_gauss(u, ear_angle, ear_width)
+    };
+    let ear = ear.clamp(0.0, 1.35);
 
-    let bass_u = ((u - (ear_c - ear_w * 2.2)) / (ear_w * 4.4)).clamp(0.0, 1.0);
+    let span = ear_width * 4.4;
+    let bass_u = ((u - (ear_angle - ear_width * 2.2)) / span).clamp(0.0, 1.0);
     let bass_tex = interp_spec(smoothed, bass_u * (cut.saturating_sub(1) as f32));
-    let ear_mag = (bass_tex * 0.62 + punch * 0.72) * ear * ear_gain;
+    let ear_mag = (bass_tex * 0.58 + punch * 0.7) * ear * ear_gain;
 
     let body = interp_spec(smoothed, cut as f32 + u * (rest.saturating_sub(1) as f32));
-    let body = body * (1.0 - ear * 0.62);
+    let body = body * (1.0 - ear * 0.58);
 
-    (ear_mag + body).clamp(0.0, 1.45)
+    ((ear_mag + body).clamp(0.0, 1.45), ear.min(1.0))
+}
+
+/// Blend bass (bin 0) and highs (last bin) across a few samples so Full layout
+/// doesn't join them as a radial spoke at 12 o'clock.
+fn close_full_seam(mags: &mut [f32]) {
+    let n = mags.len();
+    if n < 8 {
+        return;
+    }
+    let k = (n / 20).clamp(6, 14);
+    let target = (mags[0] + mags[n - 1]) * 0.5;
+    for i in 0..k {
+        let w = ((k - i) as f32 / k as f32).powf(1.35);
+        mags[i] = mags[i] * (1.0 - w) + target * w;
+        mags[n - 1 - i] = mags[n - 1 - i] * (1.0 - w) + target * w;
+    }
+}
+
+/// Raise bins that fall faster than `max_drop` below a neighbor (both directions).
+fn slope_limit_down(mags: &mut [f32], wrap: bool, max_drop: f32) {
+    let n = mags.len();
+    if n < 2 {
+        return;
+    }
+    let max_drop = max_drop.max(0.02);
+    for i in 1..n {
+        let floor = (mags[i - 1] - max_drop).max(0.0);
+        if mags[i] < floor {
+            mags[i] = floor;
+        }
+    }
+    if wrap {
+        let floor = (mags[n - 1] - max_drop).max(0.0);
+        if mags[0] < floor {
+            mags[0] = floor;
+        }
+    }
+    for i in (0..n - 1).rev() {
+        let floor = (mags[i + 1] - max_drop).max(0.0);
+        if mags[i] < floor {
+            mags[i] = floor;
+        }
+    }
+    if wrap {
+        let floor = (mags[0] - max_drop).max(0.0);
+        if mags[n - 1] < floor {
+            mags[n - 1] = floor;
+        }
+    }
+}
+
+fn ring_neighbor(mags: &[f32], i: usize, wrap: bool, delta: isize) -> f32 {
+    let n = mags.len() as isize;
+    if n <= 0 {
+        return 0.0;
+    }
+    let j = i as isize + delta;
+    let j = if wrap {
+        (j.rem_euclid(n)) as usize
+    } else {
+        j.clamp(0, n - 1) as usize
+    };
+    mags[j]
+}
+
+/// Raise narrow valleys so the ring never cuts a single-bin hole.
+/// Peaks stay as-is; a fully quiet ring stays quiet.
+fn lift_ring_notches(pts: &mut [SpecPoint], wrap: bool) {
+    let n = pts.len();
+    if n < 3 {
+        return;
+    }
+    // ~1/6 of full scale per step — steep enough for real peaks, too gentle for a needle.
+    const MAX_DROP: f32 = 0.18;
+    for _ in 0..3 {
+        let src: Vec<f32> = pts.iter().map(|p| p.mag).collect();
+        for i in 0..n {
+            let a = ring_neighbor(&src, i, wrap, -1);
+            let c = ring_neighbor(&src, i, wrap, 1);
+            let floor = (a.max(c) - MAX_DROP).max(0.0);
+            if pts[i].mag < floor {
+                pts[i].mag = floor;
+            }
+        }
+    }
+}
+
+fn blur_ring_mags(pts: &mut [SpecPoint], amount: f32, wrap: bool) {
+    if pts.len() < 3 {
+        return;
+    }
+    let amt = amount.clamp(0.0, 1.0) * 0.55;
+    let prev: Vec<f32> = pts.iter().map(|p| p.mag).collect();
+    let n = pts.len();
+    for i in 0..n {
+        let (a, c) = if wrap {
+            (
+                prev[(i + n - 1) % n],
+                prev[(i + 1) % n],
+            )
+        } else {
+            (
+                prev[i.saturating_sub(1)],
+                prev[(i + 1).min(n - 1)],
+            )
+        };
+        let b = prev[i];
+        // Preserve ear peaks a bit so lobes stay readable.
+        let keep = 1.0 - amt * (1.0 - pts[i].ear * 0.55);
+        pts[i].mag = b * keep + (a + c) * 0.5 * (1.0 - keep);
+    }
 }
 
 fn interp_spec(s: &[f32], idx: f32) -> f32 {
@@ -1189,13 +1616,21 @@ fn draw_ring_bars(
     intensity: f32,
     mode: ColorMode,
     colors: &ColorSettings,
+    cycle: f32,
+    ear_lift: f32,
     pts: &[SpecPoint],
 ) {
     for p in pts {
-        let len = p.mag.clamp(0.0, 1.45) * max_len;
-        let inner = ring_pos(center, p.t, base_r);
-        let outer = ring_pos(center, p.t, base_r + len);
-        let color = spectrum_color(p.hue, intensity, mode, colors);
+        let mag = p.mag.clamp(0.0, 1.45);
+        if !mag.is_finite() {
+            continue;
+        }
+        // Keep a short stub so quiet bins stay in the ring instead of leaving gaps.
+        let len = (mag * max_len).max((max_len * 0.05).max(2.5));
+        let r0 = base_r + ear_lift * p.ear;
+        let inner = ring_pos(center, p.t, r0);
+        let outer = ring_pos(center, p.t, r0 + len);
+        let color = spectrum_color(p.hue, intensity, mode, colors, cycle);
         if glow > 0.05 {
             painter.line_segment(
                 [inner, outer],
@@ -1215,36 +1650,57 @@ fn draw_ring_smooth(
     intensity: f32,
     mode: ColorMode,
     colors: &ColorSettings,
+    cycle: f32,
     soft_glow: bool,
     rainbow_wrap: bool,
+    outline_width: f32,
+    ear_lift: f32,
     pts: &[SpecPoint],
 ) {
     if pts.len() < 2 {
         return;
     }
-    for i in 0..pts.len() {
+    let n = pts.len();
+
+    // Soft-close Full seam: blend first/last mags so bass/highs don't meet as a spoke.
+    let mut mags: Vec<f32> = pts
+        .iter()
+        .map(|p| p.mag.clamp(0.0, 1.45))
+        .collect();
+    if rainbow_wrap && n >= 8 {
+        close_full_seam(&mut mags);
+    }
+    slope_limit_down(&mut mags, true, 0.22);
+
+    // Thin resting ring so quiet frequency stretches stay connected.
+    let min_len = (max_len * 0.05).max(2.5);
+
+    for i in 0..n {
+        let j = (i + 1) % n;
         let a = pts[i];
-        let b = pts[(i + 1) % pts.len()];
-        let len0 = a.mag.clamp(0.0, 1.45) * max_len;
-        let len1 = b.mag.clamp(0.0, 1.45) * max_len;
-        let inner0 = ring_pos(center, a.t, base_r);
-        let inner1 = ring_pos(center, b.t, base_r);
-        let outer0 = ring_pos(center, a.t, base_r + len0);
-        let outer1 = ring_pos(center, b.t, base_r + len1);
-        let hue = if rainbow_wrap && i + 1 == pts.len() {
+        let b = pts[j];
+        let len0 = (mags[i] * max_len).max(min_len);
+        let len1 = (mags[j] * max_len).max(min_len);
+        let r0 = base_r + ear_lift * a.ear;
+        let r1 = base_r + ear_lift * b.ear;
+        let inner0 = ring_pos(center, a.t, r0);
+        let inner1 = ring_pos(center, b.t, r1);
+        let outer0 = ring_pos(center, a.t, r0 + len0);
+        let outer1 = ring_pos(center, b.t, r1 + len1);
+        let hue = if rainbow_wrap && j == 0 {
             1.0
         } else {
             (a.hue + b.hue) * 0.5
         };
-        let color = spectrum_color(hue, intensity, mode, colors);
+        let color = spectrum_color(hue, intensity, mode, colors, cycle);
 
         if soft_glow && glow > 0.05 {
             let gc = with_alpha(color, (32.0 * glow) as u8);
             painter.add(Shape::convex_polygon(
                 vec![
                     inner0,
-                    ring_pos(center, a.t, base_r + len0 * 1.04),
-                    ring_pos(center, b.t, base_r + len1 * 1.04),
+                    ring_pos(center, a.t, r0 + len0 * 1.04),
+                    ring_pos(center, b.t, r1 + len1 * 1.04),
                     inner1,
                 ],
                 gc,
@@ -1256,9 +1712,19 @@ fn draw_ring_smooth(
             with_alpha(color, 215),
             Stroke::NONE,
         ));
+        // Slightly thicker stroke with a soft under-glow for a cleaner rim.
+        if outline_width > 0.6 {
+            painter.line_segment(
+                [outer0, outer1],
+                Stroke::new(
+                    outline_width * 2.1,
+                    with_alpha(color, 48),
+                ),
+            );
+        }
         painter.line_segment(
             [outer0, outer1],
-            Stroke::new(1.0_f32, with_alpha(color, 230)),
+            Stroke::new(outline_width, with_alpha(color, 235)),
         );
     }
 }
@@ -1392,6 +1858,97 @@ fn paint_rotated_image(
     painter.add(Shape::mesh(mesh));
 }
 
+fn draw_playlist_item(
+    painter: &egui::Painter,
+    app: &mut LiveVisualizerApp,
+    idx: usize,
+    center: Pos2,
+    disc_r: f32,
+    logo_angle: f32,
+    features: &crate::audio::AudioFeatures,
+    stage: &crate::config::StageSettings,
+    time: f32,
+    dt: f32,
+    sx: f32,
+    sy: f32,
+    alpha: f32,
+) {
+    let path = app
+        .settings
+        .logo_paths
+        .get(idx)
+        .map(|s| s.as_str())
+        .unwrap_or("");
+    let a = alpha.clamp(0.0, 1.0);
+
+    if crate::config::is_center_scope(path) {
+        draw_oscilloscope(painter, center, disc_r, features, stage, time, sx, sy, a);
+        return;
+    }
+    if crate::config::is_center_spectrum(path) {
+        draw_center_spectrum(
+            painter,
+            center,
+            disc_r,
+            features,
+            stage,
+            time,
+            dt,
+            &mut app.center_bars_smooth,
+            sx,
+            sy,
+            a,
+        );
+        return;
+    }
+
+    let Some(Some(cur)) = app.logos.get(idx) else {
+        return;
+    };
+    let style = app.settings.logo_style(idx);
+    let logo_center = egui::pos2(
+        center.x + style.offset_x * disc_r,
+        center.y + style.offset_y * disc_r,
+    );
+    let from_idx = app.logo_from_index.min(app.playlist_len().saturating_sub(1));
+    let base = fit_rect(
+        egui::Rect::from_center_size(
+            logo_center,
+            egui::vec2(disc_r * 2.0 * style.size, disc_r * 2.0 * style.size),
+        ),
+        cur.size,
+    );
+    let logo_rect = egui::Rect::from_center_size(
+        base.center(),
+        egui::vec2(base.width() * sx, base.height() * sy),
+    );
+    let mut tint = logo_style_tint(&style);
+    tint = Color32::from_rgba_unmultiplied(
+        tint.r(),
+        tint.g(),
+        tint.b(),
+        ((tint.a() as f32) * a) as u8,
+    );
+    let switch_g = app.logo_switch_glitch_t * stage.logo_glitch_amount.clamp(0.0, 1.5);
+    let beat_g = app.logo_beat_glitch_t * stage.logo_beat_glitch_amount.clamp(0.0, 1.5);
+    let cur_tex = cur.texture.id();
+    let prev_tex = app
+        .logos
+        .get(from_idx)
+        .and_then(|o| o.as_ref())
+        .filter(|_| from_idx != idx && !app.crt_phase.is_busy())
+        .map(|t| t.texture.id());
+    if switch_g > 0.04 && !app.crt_phase.is_busy() {
+        paint_logo_glitch(
+            painter, cur_tex, prev_tex, logo_rect, logo_angle, tint, switch_g,
+        );
+    } else if beat_g > 0.04 && !app.crt_phase.is_busy() {
+        paint_logo_glitch(painter, cur_tex, None, logo_rect, logo_angle, tint, beat_g);
+    } else {
+        paint_rotated_image(painter, cur_tex, logo_rect, logo_angle, tint);
+    }
+}
+
 fn draw_disc_ticks(painter: &egui::Painter, center: Pos2, disc_r: f32, angle: f32) {
     let n = 12;
     let color = Color32::from_rgba_unmultiplied(70, 70, 85, 160);
@@ -1407,6 +1964,240 @@ fn draw_disc_ticks(painter: &egui::Painter, center: Pos2, disc_r: f32, angle: f3
             ],
             Stroke::new(1.5_f32, color),
         );
+    }
+}
+
+/// Soft-edged time-domain scope inside the disc (no hard circle clamps).
+fn draw_oscilloscope(
+    painter: &egui::Painter,
+    center: Pos2,
+    disc_r: f32,
+    features: &crate::audio::AudioFeatures,
+    stage: &crate::config::StageSettings,
+    time: f32,
+    sx: f32,
+    sy: f32,
+    alpha: f32,
+) {
+    let wave = &features.waveform;
+    if wave.len() < 2 || disc_r < 8.0 || alpha < 0.02 {
+        return;
+    }
+
+    let gain = stage.scope_gain.clamp(0.1, 4.0);
+    let thickness = stage.scope_thickness.clamp(0.5, 6.0);
+    let n = wave.len();
+
+    // Dual-pass smooth for a cleaner CRT-ish line.
+    let mut smooth = vec![0.0_f32; n];
+    for i in 0..n {
+        let a = wave[i.saturating_sub(2)];
+        let b = wave[i.saturating_sub(1)];
+        let c = wave[i];
+        let d = wave[(i + 1).min(n - 1)];
+        let e = wave[(i + 2).min(n - 1)];
+        smooth[i] = a * 0.05 + b * 0.2 + c * 0.5 + d * 0.2 + e * 0.05;
+    }
+
+    let span = disc_r * 0.86 * sx.clamp(0.02, 1.0);
+    let amp = disc_r * 0.58 * gain * sy.clamp(0.02, 1.0);
+    let cycle = time * stage.scope_cycle_speed.clamp(0.0, 3.0);
+    let alpha = alpha.clamp(0.0, 1.0);
+
+    painter.line_segment(
+        [
+            egui::pos2(center.x - span * 0.9, center.y),
+            egui::pos2(center.x + span * 0.9, center.y),
+        ],
+        Stroke::new(
+            1.0_f32,
+            Color32::from_rgba_unmultiplied(255, 255, 255, (18.0 * alpha) as u8),
+        ),
+    );
+
+    for i in 0..n - 1 {
+        let t0 = i as f32 / (n - 1) as f32;
+        let t1 = (i + 1) as f32 / (n - 1) as f32;
+        let w0 = ((t0 * std::f32::consts::PI).sin()).powi(2);
+        let w1 = ((t1 * std::f32::consts::PI).sin()).powi(2);
+        let w = ((w0 + w1) * 0.5).clamp(0.0, 1.0);
+        if w < 0.015 {
+            continue;
+        }
+
+        let dx0 = (t0 - 0.5) * 2.0 * span;
+        let dx1 = (t1 - 0.5) * 2.0 * span;
+        let dy0 = -smooth[i].clamp(-1.0, 1.0) * amp * w0;
+        let dy1 = -smooth[i + 1].clamp(-1.0, 1.0) * amp * w1;
+        let p0 = egui::pos2(center.x + dx0, center.y + dy0);
+        let p1 = egui::pos2(center.x + dx1, center.y + dy1);
+
+        let mid_t = (t0 + t1) * 0.5;
+        let rgb = effect_rgb(
+            stage.scope_color_mode,
+            stage.scope_color,
+            stage.scope_color_b,
+            mid_t,
+            cycle,
+        );
+        let a = (w.powf(0.65) * 245.0 * alpha) as u8;
+        let color = Color32::from_rgba_unmultiplied(
+            (rgb.r * 255.0) as u8,
+            (rgb.g * 255.0) as u8,
+            (rgb.b * 255.0) as u8,
+            a,
+        );
+        if thickness > 1.0 {
+            painter.line_segment(
+                [p0, p1],
+                Stroke::new(
+                    thickness * 2.6,
+                    Color32::from_rgba_unmultiplied(
+                        (rgb.r * 255.0) as u8,
+                        (rgb.g * 255.0) as u8,
+                        (rgb.b * 255.0) as u8,
+                        (w * 42.0 * alpha) as u8,
+                    ),
+                ),
+            );
+        }
+        painter.line_segment([p0, p1], Stroke::new(thickness * (0.5 + 0.5 * w), color));
+    }
+}
+
+/// Apple call / Music-style bars: bass in the center, highs on the outsides,
+/// left-right symmetric, mirrored up/down from the midline.
+fn draw_center_spectrum(
+    painter: &egui::Painter,
+    center: Pos2,
+    disc_r: f32,
+    features: &crate::audio::AudioFeatures,
+    stage: &crate::config::StageSettings,
+    time: f32,
+    dt: f32,
+    smooth: &mut Vec<f32>,
+    sx: f32,
+    sy: f32,
+    alpha: f32,
+) {
+    let spec = &features.spectrum;
+    if spec.is_empty() || disc_r < 8.0 || alpha < 0.02 {
+        return;
+    }
+
+    // Odd count so there's a true center bar (FaceTime / Music vibe).
+    let bars = 21_usize;
+    if smooth.len() != bars {
+        smooth.resize(bars, 0.0);
+    }
+
+    let gain = stage.spectrum_gain.clamp(0.1, 4.0);
+    let thickness = stage.spectrum_thickness.clamp(0.5, 6.0);
+    let span = disc_r * 0.78 * sx.clamp(0.02, 1.0);
+    let max_h = disc_r * 0.48 * gain * sy.clamp(0.02, 1.0);
+    let cycle = time * stage.spectrum_cycle_speed.clamp(0.0, 3.0);
+    let alpha = alpha.clamp(0.0, 1.0);
+    let mid = (bars as f32 - 1.0) * 0.5;
+
+    // Overall voice/music level — keeps the whole row alive like a call meter.
+    let voice = (features.rms * 0.45 + features.mid * 0.35 + features.bass * 0.25
+        + features.low_mid * 0.15)
+        .clamp(0.0, 1.0);
+
+    let attack = 1.0 - (-dt * 18.0).exp();
+    let release = 1.0 - (-dt * 7.0).exp();
+
+    for i in 0..bars {
+        // 0 at center → 1 at either edge. Bass lives in the middle.
+        let dist = ((i as f32 - mid).abs() / mid).clamp(0.0, 1.0);
+        // Sample spectrum by distance-from-center (not left→right song bias).
+        let bin_f = dist.powf(0.85) * (spec.len().saturating_sub(1) as f32);
+        let bin = bin_f as usize;
+        let frac = bin_f - bin as f32;
+        let a = spec.get(bin).copied().unwrap_or(0.0);
+        let b = spec.get(bin + 1).copied().unwrap_or(a);
+        let band = (a + (b - a) * frac).clamp(0.0, 1.2);
+
+        // Center accent + shared voice energy so it doesn't lean with the mix.
+        let center_boost = 1.0 - dist * 0.35;
+        let target = (band * 0.7 * center_boost + voice * 0.45 * (0.55 + 0.45 * center_boost))
+            .clamp(0.0, 1.15)
+            .powf(0.9);
+
+        let cur = smooth[i];
+        let rate = if target > cur { attack } else { release };
+        smooth[i] = cur + (target - cur) * rate;
+    }
+
+    // Even bar geometry — identical widths, centered in the disc.
+    let step = (span * 2.0) / bars as f32;
+    let bar_w = (step * 0.62).clamp(2.0, 14.0);
+    let radius = (bar_w * 0.45).clamp(1.0, 6.0);
+
+    for i in 0..bars {
+        let mag = smooth[i];
+        let h = (mag * max_h).max(0.0);
+        // Tiny resting height so bars never fully disappear (call-meter feel).
+        let h = h.max(bar_w * 0.35 * (0.25 + 0.75 * voice) * sy.clamp(0.02, 1.0));
+        if h < 0.5 {
+            continue;
+        }
+
+        let t = i as f32 / (bars - 1).max(1) as f32;
+        let mid_x = center.x - span + step * (i as f32 + 0.5);
+        let half_w = bar_w * 0.5;
+
+        let rgb = effect_rgb(
+            stage.spectrum_color_mode,
+            stage.spectrum_color,
+            stage.spectrum_color_b,
+            t,
+            cycle,
+        );
+        let a = ((170.0 + 75.0 * mag.min(1.0)) * alpha) as u8;
+        let fill = Color32::from_rgba_unmultiplied(
+            (rgb.r * 255.0) as u8,
+            (rgb.g * 255.0) as u8,
+            (rgb.b * 255.0) as u8,
+            a,
+        );
+        let glow = Color32::from_rgba_unmultiplied(
+            (rgb.r * 255.0) as u8,
+            (rgb.g * 255.0) as u8,
+            (rgb.b * 255.0) as u8,
+            (36.0 * alpha) as u8,
+        );
+
+        // One continuous capsule through the midline (up + down).
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(mid_x - half_w, center.y - h),
+            egui::pos2(mid_x + half_w, center.y + h),
+        );
+        if thickness > 1.2 {
+            painter.rect_filled(rect.expand(1.4), radius + 1.0, glow);
+        }
+        painter.rect_filled(rect, radius, fill);
+    }
+}
+
+fn effect_rgb(
+    mode: ScopeColorMode,
+    color_a: RgbColor,
+    color_b: RgbColor,
+    t: f32,
+    cycle: f32,
+) -> RgbColor {
+    match mode {
+        ScopeColorMode::Solid => color_a,
+        ScopeColorMode::Rainbow => {
+            let (r, g, b) = crate::config::neon_rainbow(t);
+            RgbColor::new(r, g, b)
+        }
+        ScopeColorMode::Gradient => color_a.lerp(color_b, t),
+        ScopeColorMode::Cycle => {
+            let (r, g, b) = crate::config::neon_rainbow((t + cycle).fract());
+            RgbColor::new(r, g, b)
+        }
     }
 }
 
@@ -1439,12 +2230,18 @@ fn draw_fft_graph(
             egui::pos2(x + 0.5, graph.bottom() - h),
             egui::pos2(x + bar_w - 0.5, graph.bottom()),
         );
-        painter.rect_filled(bar, 0.0, spectrum_color(i as f32 / n as f32, 0.9, mode, colors));
+        painter.rect_filled(bar, 0.0, spectrum_color(i as f32 / n as f32, 0.9, mode, colors, 0.0));
     }
 }
 
-fn spectrum_color(t: f32, intensity: f32, mode: ColorMode, colors: &ColorSettings) -> Color32 {
-    let rgb = colors.sample(mode, t, intensity);
+fn spectrum_color(
+    t: f32,
+    intensity: f32,
+    mode: ColorMode,
+    colors: &ColorSettings,
+    cycle: f32,
+) -> Color32 {
+    let rgb = colors.sample_cycled(mode, t, intensity, cycle);
     Color32::from_rgb(
         (rgb.r * 255.0) as u8,
         (rgb.g * 255.0) as u8,

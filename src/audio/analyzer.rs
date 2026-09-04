@@ -20,6 +20,9 @@ pub struct AudioFeatures {
     pub kick: f32,
     /// Log-spaced spectrum magnitudes, typically 128–256 bins, normalized 0..1.
     pub spectrum: Vec<f32>,
+    /// Recent time-domain samples for the center oscilloscope (−1..1).
+    #[serde(default)]
+    pub waveform: Vec<f32>,
 }
 
 impl Default for AudioFeatures {
@@ -34,6 +37,7 @@ impl Default for AudioFeatures {
             beat: 0.0,
             kick: 0.0,
             spectrum: vec![0.0; 256],
+            waveform: vec![0.0; 256],
         }
     }
 }
@@ -102,6 +106,8 @@ pub struct Analyzer {
     band_floor: [f32; 6],
     kick_floor: f32,
     smooth_kick: f32,
+    /// Downsampled recent waveform for the center scope.
+    waveform: Vec<f32>,
     pub tuning: BandTuning,
 }
 
@@ -129,6 +135,7 @@ impl Analyzer {
             band_floor: [0.02; 6],
             kick_floor: 0.02,
             smooth_kick: 0.0,
+            waveform: vec![0.0; 256],
             tuning: BandTuning::default(),
         }
     }
@@ -261,6 +268,8 @@ impl Analyzer {
         let kick_s = self.smooth_kick.clamp(0.0, 1.0);
         let beat = self.beat.process(bass_s, rms_s, kick_body, kick_click, kick_attack);
 
+        fill_waveform(samples, gain, &mut self.waveform);
+
         AudioFeatures {
             rms: rms_s,
             bass: bass_s,
@@ -271,6 +280,7 @@ impl Analyzer {
             beat,
             kick: kick_s,
             spectrum: self.smooth_spectrum.clone(),
+            waveform: self.waveform.clone(),
         }
     }
 
@@ -283,6 +293,9 @@ impl Analyzer {
             *s *= 1.0 - release * 0.5;
         }
         self.smooth_kick *= 1.0 - release * 0.5;
+        for s in &mut self.waveform {
+            *s *= 1.0 - release * 0.35;
+        }
         let beat = self.beat.process(
             self.smooth_bands[1].clamp(0.0, 1.0),
             self.smooth_bands[0].clamp(0.0, 1.0),
@@ -300,7 +313,34 @@ impl Analyzer {
             beat,
             kick: self.smooth_kick.clamp(0.0, 1.0),
             spectrum: self.smooth_spectrum.clone(),
+            waveform: self.waveform.clone(),
         }
+    }
+}
+
+/// Resample the newest chunk into a fixed-length scope buffer (−1..1), DC-removed.
+fn fill_waveform(samples: &[f32], gain: f32, out: &mut [f32]) {
+    if out.is_empty() {
+        return;
+    }
+    if samples.is_empty() {
+        out.fill(0.0);
+        return;
+    }
+    let n = out.len();
+    let take = samples.len().min(2048).max(n);
+    let slice = &samples[samples.len() - take..];
+    let last = (slice.len() - 1).max(1);
+    let mut mean = 0.0_f32;
+    for (i, dst) in out.iter_mut().enumerate() {
+        let idx = i * last / (n - 1).max(1);
+        let v = slice[idx] * gain * 2.4;
+        *dst = v;
+        mean += v;
+    }
+    mean /= n as f32;
+    for dst in out.iter_mut() {
+        *dst = (*dst - mean).clamp(-1.0, 1.0);
     }
 }
 
@@ -378,7 +418,7 @@ fn relative_to_floor(floor: &mut f32, energy: f32, contrast: f32) -> f32 {
     } else {
         *floor = *floor * 0.955 + e * 0.045;
     }
-    let floor = (*floor).max(0.02);
+    let floor = (*floor).max(0.008);
     let above = (e - floor * 0.72).max(0.0);
     let relative = above / (floor * 0.5 + 0.07);
     let contrast = contrast.clamp(0.0, 1.0);
@@ -497,18 +537,26 @@ fn remap_log_spectrum(
     }
 
     // Local contrast: boost bins that stick out from neighbors (real frequency peaks).
-    // Do not wrap: bass must not be compared against 14 kHz.
+    // Soften when the whole spectrum is quiet so noise doesn't sparkle.
+    let quiet = (1.0 - (peak / 0.45).clamp(0.0, 1.0)).clamp(0.0, 1.0);
+    let contrast_amt = 0.55 * (1.0 - quiet * 0.85);
     for i in 0..n {
         let left = if i == 0 { targets[i] } else { targets[i - 1] };
         let right = if i + 1 >= n { targets[i] } else { targets[i + 1] };
         let local = (left + right) * 0.5;
         let delta = (targets[i] - local).max(0.0);
-        targets[i] = (targets[i] + delta * 0.55).clamp(0.0, 1.35);
+        targets[i] = (targets[i] + delta * contrast_amt).clamp(0.0, 1.35);
         peak = peak.max(targets[i]);
     }
 
-    let norm = if peak > 0.4 {
-        (0.92 / peak).clamp(0.55, 1.2)
+    // Soft peak-norm — avoid a hard cliff that toggles boost as songs go quiet.
+    let norm = if peak > 0.55 {
+        (0.88 / peak).clamp(0.6, 1.12)
+    } else if peak > 0.18 {
+        let u = ((peak - 0.18) / 0.37).clamp(0.0, 1.0);
+        let u = u * u * (3.0 - 2.0 * u);
+        let hard = (0.88 / peak.max(0.18)).clamp(0.6, 1.12);
+        1.0 + (hard - 1.0) * u
     } else {
         1.0
     };
@@ -518,9 +566,9 @@ fn remap_log_spectrum(
         out[i] = smooth(out[i], target, attack, release);
     }
 
-    // Very light blur only — keep peaks sharp enough to read as frequencies.
-    // Linear (no wrap) so the low end doesn't smear into the highs.
-    linear_blur(out, targets, n, 1);
+    // Very light blur — keep peaks readable, but a touch more when quiet to kill sparkle.
+    let blur_r = if peak < 0.28 { 2 } else { 1 };
+    linear_blur(out, targets, n, blur_r);
 }
 
 fn linear_blur(data: &mut [f32], scratch: &mut [f32], n: usize, radius: usize) {
