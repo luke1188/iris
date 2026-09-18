@@ -6,7 +6,7 @@ use crate::config::{
     save_settings, AppSettings, LogoMotion, LogoStyle, StageSettings,
 };
 use crate::display::{is_fullscreen, toggle_fullscreen};
-use crate::renderer::ParticleSystem;
+use crate::renderer::{ParticleSystem, RadialSpectrum};
 use eframe::egui;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -96,6 +96,7 @@ pub struct LiveVisualizerApp {
     pub logo_beat_glitch_t: f32,
     last_beat_for_glitch: f32,
     pub particles: ParticleSystem,
+    pub radial_spectrum: RadialSpectrum,
     pub preset_names: Vec<String>,
     pub preset_save_name: String,
     /// Session settings need writing to settings.toml.
@@ -195,6 +196,7 @@ impl LiveVisualizerApp {
             logo_beat_glitch_t: 0.0,
             last_beat_for_glitch: 0.0,
             particles,
+            radial_spectrum: RadialSpectrum::new(),
             preset_names,
             preset_save_name,
             settings_dirty: false,
@@ -292,6 +294,10 @@ impl LiveVisualizerApp {
     }
 
     pub fn apply_preset_by_name(&mut self, name: &str) {
+        if crate::config::is_locked_preset(name) {
+            self.reset_to_factory();
+            return;
+        }
         if self.preset_dirty {
             if self.pending_preset_load.as_deref() != Some(name) {
                 self.pending_preset_load = Some(name.to_string());
@@ -324,11 +330,33 @@ impl LiveVisualizerApp {
         }
     }
 
+    pub fn reset_to_factory(&mut self) {
+        let preset = crate::config::factory_preset();
+        self.settings.apply_preset(&preset);
+        self.analyzer.set_tuning(self.settings.tuning.clone());
+        self.analyzer.beat_mut().apply_settings(&self.settings.beat);
+        self.particles.set_settings(self.settings.particles.clone());
+        self.preset_save_name = crate::config::FACTORY_PRESET_NAME.to_string();
+        self.preset_dirty = false;
+        self.pending_preset_load = None;
+        self.settings_dirty = true;
+        self.error_message = None;
+        self.status_message = Some("Reset to factory default".into());
+        log::info!("Reset to factory default");
+    }
+
     pub fn save_current_preset(&mut self) {
         let name = sanitize_preset_name(&self.preset_save_name);
         self.preset_save_name = name.clone();
         if name.is_empty() {
             self.error_message = Some("Enter a preset name before saving".into());
+            return;
+        }
+        if crate::config::is_locked_preset(&name) {
+            self.error_message = Some(
+                "The default preset is built-in and cannot be overwritten — save as a new name"
+                    .into(),
+            );
             return;
         }
         let preset = self.settings.to_preset(&name);
@@ -663,28 +691,27 @@ impl LiveVisualizerApp {
         log::info!("Shutdown complete — audio released");
     }
 
-    fn update_audio(&mut self) {
+    fn update_audio(&mut self, dt: f32) {
         if self.shutting_down {
             return;
         }
         let t0 = Instant::now();
+        let spec_cfg = self
+            .settings
+            .visualizer
+            .analysis_config(&self.analyzer.tuning);
         if let Some(samples) = self.capture.drain_samples() {
-            self.features = self.analyzer.process(&samples);
+            self.features = self.analyzer.process(&samples, dt, &spec_cfg);
             *self.features_shared.lock() = self.features.clone();
         } else {
-            self.features = self.analyzer.tick_idle();
+            self.features = self.analyzer.tick_idle(dt, &spec_cfg);
             *self.features_shared.lock() = self.features.clone();
         }
         self.timing.audio_ms = t0.elapsed().as_secs_f32() * 1000.0;
     }
 
-    fn update_timing(&mut self) {
+    fn update_timing(&mut self, dt: f32) {
         let now = Instant::now();
-        let dt = self
-            .last_frame
-            .elapsed()
-            .as_secs_f32()
-            .clamp(1.0 / 240.0, 1.0 / 20.0);
         self.timing.frame_ms = dt * 1000.0;
         self.last_frame = now;
         self.frame_count += 1;
@@ -795,8 +822,13 @@ impl eframe::App for LiveVisualizerApp {
         }
 
         self.handle_shortcuts(ctx);
-        self.update_audio();
-        self.update_timing();
+        let dt = self
+            .last_frame
+            .elapsed()
+            .as_secs_f32()
+            .clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.update_audio(dt);
+        self.update_timing(dt);
         ctx.request_repaint();
 
         // Detached settings window — drag to the DJ laptop screen while

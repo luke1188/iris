@@ -2,17 +2,44 @@ name = "default"
 
 [visualizer]
 style = "bars"
-color_mode = "rgb"
+color_mode = "rainbow"
+layout = "mirrored"
 radius = 0.22
 thickness = 2.0
-sensitivity = 1.4
-smoothing = 0.35
-bass_response = 1.2
-mid_response = 1.0
-high_response = 0.9
-max_bar_length = 0.35
-glow = 0.5
-segment_count = 256
+sensitivity = 1.25
+smoothing = 0.4
+bass_response = 0.95
+mid_response = 1.12
+high_response = 0.88
+max_bar_length = 0.36
+glow = 0.48
+segment_count = 192
+ear_gain = 1.45
+ear_count = 2
+ear_angle = 0.2
+ear_width = 0.075
+ear_radius = 0.06
+outline_width = 1.4
+outline_smooth = 0.4
+cycle_speed = 0.15
+min_frequency = 30.0
+max_frequency = 16000.0
+attack_ms = 28.0
+release_ms = 210.0
+noise_floor_db = -66.0
+ceiling_db = -14.0
+response_exponent = 1.7
+frequency_smoothing = 0.34
+transient_scale = 0.12
+rotation_offset = 0.5
+reverse_spectrum = false
+bar_fill = 0.74
+min_bar_height = 0.008
+show_base_ring = false
+base_ring_width = 1.15
+base_ring_brightness = 0.16
+bar_cap = "square"
+show_peak_caps = false
 
 [particles]
 enabled = false
@@ -26,29 +53,34 @@ bass_reaction = 1.0
 beat_reaction = 1.2
 spread = 0.8
 glow = 0.4
+color_mode = "rainbow"
+cycle_speed = 0.18
 
 [beat]
-sensitivity = 1.2
-cooldown = 0.12
+sensitivity = 0.85
+cooldown = 0.22
 kick_sensitivity = 1.0
+mode = "kick_only"
+bass_weight = 1.0
+rms_weight = 0.0
 
 [colors]
-rgb_intensity = 1.0
-glow_intensity = 0.6
+rgb_intensity = 1.08
+glow_intensity = 0.5
 
 [tuning]
-input_gain = 0.85
-threshold = 0.04
-bass_gain = 0.35
-low_mid_gain = 0.75
-mid_gain = 1.0
-high_mid_gain = 1.15
-high_gain = 1.25
-spectrum_bass_tilt = 0.45
-ceiling = 0.85
-attack = 0.32
-release = 0.14
-sensitivity = 1.2
+input_gain = 0.8
+threshold = 0.05
+bass_gain = 0.42
+low_mid_gain = 0.82
+mid_gain = 1.05
+high_mid_gain = 1.18
+high_gain = 1.22
+spectrum_bass_tilt = 0.62
+ceiling = 0.82
+attack = 0.34
+release = 0.13
+sensitivity = 1.15
 
 [stage]
 background_brightness = 0.85
@@ -57,7 +89,7 @@ background_zoom = 1.05
 background_pan_x = 0.0
 background_pan_y = 0.0
 logo_size = 0.72
-disc_radius = 0.14
-logo_glow = 0.35
+disc_radius = 0.145
+logo_glow = 0.0
 bass_pulse = 0.08
-beat_pulse = 0.12
+beat_pulse = 0.14

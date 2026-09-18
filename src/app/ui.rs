@@ -3,8 +3,8 @@
 use super::media::{cover_rect, fit_rect};
 use super::state::LiveVisualizerApp;
 use crate::config::{
-    BeatSettings, ColorMode, ColorSettings, LogoMotion, RgbColor, ScopeColorMode, SpectrumLayout,
-    SpectrumStyle, CENTER_SCOPE_ID, CENTER_SPECTRUM_ID,
+    BarCap, BeatSettings, ColorMode, ColorSettings, LogoMotion, RgbColor, ScopeColorMode,
+    SpectrumLayout, SpectrumStyle, CENTER_SCOPE_ID, CENTER_SPECTRUM_ID,
 };
 use egui::epaint::Mesh;
 use egui::{self, Color32, Pos2, RichText, Sense, Shape, Stroke};
@@ -118,6 +118,13 @@ fn section_frame(ui: &mut egui::Ui, title: &str, default_open: bool, add_content
 fn draw_presets_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Presets", true, |ui| {
         ui.horizontal(|ui| {
+            if ui
+                .button("Reset to default")
+                .on_hover_text("Restore the built-in factory look and tuning (cannot be overwritten)")
+                .clicked()
+            {
+                app.reset_to_factory();
+            }
             if ui.button("Refresh").on_hover_text("Reload user presets folder").clicked() {
                 app.refresh_presets();
             }
@@ -142,7 +149,7 @@ fn draw_presets_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
         });
         ui.label(
             RichText::new(format!(
-                "Session autosaves · presets only when you click Save → {}",
+                "Session autosaves · user presets → {}",
                 crate::config::presets_dir().display()
             ))
             .small()
@@ -157,15 +164,28 @@ fn draw_presets_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
             .spacing([8.0, 4.0])
             .show(ui, |ui| {
                 for name in &names {
+                    let locked = crate::config::is_locked_preset(name);
                     let selected = !app.preset_dirty
                         && app.settings.last_preset.as_deref() == Some(name.as_str());
                     let label = if pending.as_deref() == Some(name.as_str()) {
                         format!("{name}  (click again)")
+                    } else if locked {
+                        format!("{name}  🔒")
                     } else {
                         name.clone()
                     };
-                    if ui.selectable_label(selected, label).clicked() {
-                        app.apply_preset_by_name(name);
+                    let response = ui.selectable_label(selected, label);
+                    let response = if locked {
+                        response.on_hover_text("Factory preset — always resets to recommended settings")
+                    } else {
+                        response
+                    };
+                    if response.clicked() {
+                        if locked {
+                            app.reset_to_factory();
+                        } else {
+                            app.apply_preset_by_name(name);
+                        }
                     }
                     ui.end_row();
                 }
@@ -175,21 +195,30 @@ fn draw_presets_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
         ui.horizontal(|ui| {
             ui.label("Save as");
             ui.text_edit_singleline(&mut app.preset_save_name);
-            let save_label = if app.preset_names.iter().any(|n| n == &app.preset_save_name) {
+            let locked_name = crate::config::is_locked_preset(&app.preset_save_name);
+            let save_label = if locked_name {
+                "Locked"
+            } else if app.preset_names.iter().any(|n| n == &app.preset_save_name) {
                 "Overwrite"
             } else {
                 "Save"
             };
-            if ui
-                .button(save_label)
-                .on_hover_text("Writes a named preset file (session already autosaves)")
-                .clicked()
-            {
+            let save = ui
+                .add_enabled(
+                    !locked_name,
+                    egui::Button::new(save_label),
+                )
+                .on_hover_text(if locked_name {
+                    "Choose a different name — default cannot be overwritten"
+                } else {
+                    "Writes a named preset file (session already autosaves)"
+                });
+            if save.clicked() {
                 app.save_current_preset();
             }
         });
         ui.label(
-            RichText::new("Letters, numbers, - and _ only (spaces become _)")
+            RichText::new("Letters, numbers, - and _ only (spaces become _). default is factory-locked.")
                 .small()
                 .color(Color32::DARK_GRAY),
         );
@@ -382,16 +411,21 @@ fn draw_tuning_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
         }
 
         ui.horizontal(|ui| {
-            if ui.button("Reset").clicked() {
+            if ui
+                .button("Reset tuning")
+                .on_hover_text("Restore factory band gains")
+                .clicked()
+            {
                 app.analyzer.tuning.reset_defaults();
                 changed = true;
             }
             if ui
-                .button("Bar venue")
-                .on_hover_text("Loads the bundled bar preset")
+                .button("Reset all to default")
+                .on_hover_text("Factory look, colors, beat, particles, and tuning")
                 .clicked()
             {
-                app.apply_preset_by_name("bar");
+                app.reset_to_factory();
+                changed = false;
             }
         });
 
@@ -405,6 +439,7 @@ fn draw_levels_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Live levels", true, |ui| {
         let c = &app.settings.colors;
         level_bar(ui, "RMS", app.features.rms, Color32::from_rgb(180, 180, 200));
+        level_bar(ui, "Sub", app.features.sub, Color32::from_rgb(120, 80, 220));
         level_bar(ui, "Bass", app.features.bass, rgb_to_color32(c.band_bass));
         level_bar(ui, "Low Mid", app.features.low_mid, rgb_to_color32(c.band_low_mid));
         level_bar(ui, "Mid", app.features.mid, rgb_to_color32(c.band_mid));
@@ -433,12 +468,19 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
             ui.label(RichText::new("Layout").small().strong());
             ui.horizontal_wrapped(|ui| {
                 changed |= ui
-                    .selectable_value(&mut v.layout, SpectrumLayout::Full, "Full circle")
+                    .selectable_value(&mut v.layout, SpectrumLayout::Mirrored, "Mirrored")
+                    .on_hover_text(
+                        "Recommended: bass at the bottom, same spectrum on both sides",
+                    )
                     .changed();
                 changed |= ui
-                    .selectable_value(&mut v.layout, SpectrumLayout::Split, "Split L/R")
+                    .selectable_value(&mut v.layout, SpectrumLayout::Continuous, "Continuous")
+                    .on_hover_text("Frequency increases clockwise around the full ring")
+                    .changed();
+                changed |= ui
+                    .selectable_value(&mut v.layout, SpectrumLayout::Split, "Split ears")
                     .on_hover_text(
-                        "Mirrored circle: bass/sub as two ear spikes, mids/highs complete the ring",
+                        "Legacy Trap Nation layout: bass/sub as ear spikes, mids/highs complete the ring",
                     )
                     .changed();
             });
@@ -472,7 +514,7 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
             ui.label(RichText::new("Ring color").small().strong());
             ui.horizontal_wrapped(|ui| {
                 for (mode, label, tip) in [
-                    (ColorMode::Rainbow, "Rainbow", "Classic neon spectrum"),
+                    (ColorMode::Rainbow, "Rainbow", "Cyan → blue → violet → magenta along frequency"),
                     (ColorMode::Solid, "Solid", "One color for the whole ring"),
                     (ColorMode::Gradient, "Gradient", "Blend from low → high"),
                     (ColorMode::Cycle, "Cycle", "Scrolling rainbow"),
@@ -563,18 +605,85 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
 
         {
             let v = &mut app.settings.visualizer;
-            changed |= slider(ui, "Thickness", &mut v.thickness, 0.5..=6.0).changed();
+            let mut count = v.segment_count as f32;
+            if slider(ui, "Bar count", &mut count, 64.0..=384.0)
+                .on_hover_text("Dense rectangular bars around the ring")
+                .changed()
+            {
+                v.segment_count = count.round() as u32;
+                changed = true;
+            }
+            changed |= slider(ui, "Bar fill", &mut v.bar_fill, 0.5..=0.9)
+                .on_hover_text("How much of each slot the bar occupies (rest is the gap)")
+                .changed();
+            changed |= slider(ui, "Rotation", &mut v.rotation_offset, 0.0..=1.0)
+                .on_hover_text("0.5 puts bass at the bottom in Mirrored mode")
+                .changed();
+            changed |= ui
+                .checkbox(&mut v.reverse_spectrum, "Reverse frequency direction")
+                .changed();
+            ui.horizontal(|ui| {
+                ui.add_sized([110.0, 18.0], egui::Label::new("Bar ends"));
+                changed |= ui
+                    .selectable_value(&mut v.bar_cap, BarCap::Square, "Square")
+                    .changed();
+                changed |= ui
+                    .selectable_value(&mut v.bar_cap, BarCap::Rounded, "Rounded")
+                    .changed();
+            });
+            changed |= slider(ui, "Thickness", &mut v.thickness, 0.5..=6.0)
+                .on_hover_text("Used by Smooth / Glow styles")
+                .changed();
+            changed |= slider(ui, "Min height", &mut v.min_bar_height, 0.004..=0.03)
+                .on_hover_text("Resting crown height (viewport fraction)")
+                .changed();
             changed |= slider(ui, "Max length", &mut v.max_bar_length, 0.15..=0.85).changed();
             changed |= slider(ui, "Glow", &mut v.glow, 0.0..=1.5).changed();
             changed |= slider(ui, "Smoothing", &mut v.smoothing, 0.05..=0.95)
-                .on_hover_text("Spatial blur on the ring body")
+                .on_hover_text("Spatial blur on the Smooth / Glow ring body")
                 .changed();
             changed |= slider(ui, "Outline width", &mut v.outline_width, 0.5..=3.5)
-                .on_hover_text("Outer rim stroke")
+                .on_hover_text("Outer rim stroke (Smooth / Glow)")
                 .changed();
             changed |= slider(ui, "Outline smooth", &mut v.outline_smooth, 0.0..=1.0)
                 .on_hover_text("Extra blur on the outer outline for a cleaner edge")
                 .changed();
+            ui.add_space(4.0);
+            ui.label(RichText::new("Analysis").small().strong());
+            changed |= slider(ui, "Attack ms", &mut v.attack_ms, 12.0..=80.0)
+                .on_hover_text("How fast bars rise into transients")
+                .changed();
+            changed |= slider(ui, "Release ms", &mut v.release_ms, 80.0..=400.0)
+                .on_hover_text("How slowly bars fall after a hit")
+                .changed();
+            changed |= slider(ui, "Noise floor", &mut v.noise_floor_db, -90.0..=-40.0)
+                .on_hover_text("dB below this does not move the ring")
+                .changed();
+            changed |= slider(ui, "Ceiling dB", &mut v.ceiling_db, -30.0..=0.0)
+                .on_hover_text("dB that maps to full bar height")
+                .changed();
+            changed |= slider(ui, "Response", &mut v.response_exponent, 1.0..=2.2)
+                .on_hover_text("Higher = only strong frequencies get tall")
+                .changed();
+            changed |= slider(ui, "Freq smooth", &mut v.frequency_smoothing, 0.0..=0.8)
+                .on_hover_text("Blur neighboring bands so bars don't spike alone")
+                .changed();
+            changed |= slider(ui, "Transient", &mut v.transient_scale, 0.0..=0.5)
+                .on_hover_text("Extra punch on kicks/snares")
+                .changed();
+            changed |= slider(ui, "Bass weight", &mut v.bass_response, 0.3..=2.0).changed();
+            changed |= slider(ui, "Mid weight", &mut v.mid_response, 0.3..=2.0).changed();
+            changed |= slider(ui, "Treble weight", &mut v.high_response, 0.3..=2.0).changed();
+            changed |= slider(ui, "Min freq", &mut v.min_frequency, 20.0..=80.0)
+                .on_hover_text("Analysis floor. Bar mode still skips sub rumble (~20–65 Hz) on the ring")
+                .changed();
+            changed |= slider(ui, "Max freq", &mut v.max_frequency, 8_000.0..=20_000.0).changed();
+            changed |= ui.checkbox(&mut v.show_base_ring, "Show dim base ring").changed();
+            if v.show_base_ring {
+                changed |= slider(ui, "Ring width", &mut v.base_ring_width, 0.4..=3.0).changed();
+                changed |= slider(ui, "Ring bright", &mut v.base_ring_brightness, 0.04..=0.5)
+                    .changed();
+            }
         }
         if changed {
             app.mark_settings_dirty();
@@ -1127,6 +1236,7 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
     app.particles.draw(&painter);
 
     draw_spectrum(
+        &mut app.radial_spectrum,
         &painter,
         center,
         disc_r,
@@ -1234,6 +1344,7 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
 }
 
 fn draw_spectrum(
+    radial: &mut crate::renderer::RadialSpectrum,
     painter: &egui::Painter,
     center: Pos2,
     disc_r: f32,
@@ -1243,6 +1354,13 @@ fn draw_spectrum(
     colors: &ColorSettings,
     time: f32,
 ) {
+    if vis.style == SpectrumStyle::Bars {
+        radial.paint(
+            painter, center, disc_r, min_dim, features, vis, colors, time,
+        );
+        return;
+    }
+
     let spectrum = &features.spectrum;
     if spectrum.is_empty() {
         return;
@@ -1250,7 +1368,7 @@ fn draw_spectrum(
 
     let n = spectrum.len();
     let mut smoothed = spectrum.clone();
-    let wrap_ring = vis.layout == SpectrumLayout::Full;
+    let wrap_ring = vis.layout != SpectrumLayout::Split;
 
     // Soft gate: only squash bins whose neighbors are also quiet.
     // Punching a hole next to a live bin tessellates as a radial "laser".
@@ -1373,7 +1491,7 @@ fn draw_spectrum(
                 colors,
                 cycle,
                 matches!(vis.style, SpectrumStyle::SoftGlow),
-                vis.layout == SpectrumLayout::Full,
+                vis.layout != SpectrumLayout::Split,
                 vis.outline_width.clamp(0.4, 4.5),
                 ear_lift,
                 &pts,
@@ -1398,12 +1516,18 @@ fn collect_ring_points(
 ) -> Vec<SpecPoint> {
     let n = smoothed.len().max(8);
     match vis.layout {
-        SpectrumLayout::Full => (0..n)
+        SpectrumLayout::Continuous | SpectrumLayout::Mirrored => (0..n)
             .map(|i| {
                 let t = (i as f32 + 0.5) / n as f32;
+                let mag = if vis.layout == SpectrumLayout::Mirrored {
+                    let u = if t <= 0.5 { t * 2.0 } else { (1.0 - t) * 2.0 };
+                    interp_spec(smoothed, u * (n.saturating_sub(1) as f32))
+                } else {
+                    smoothed[i].clamp(0.0, 1.2)
+                };
                 SpecPoint {
                     t,
-                    mag: smoothed[i].clamp(0.0, 1.2),
+                    mag,
                     hue: t,
                     ear: 0.0,
                 }
@@ -1606,6 +1730,7 @@ fn ring_pos(center: Pos2, t: f32, radius: f32) -> Pos2 {
     Pos2::new(center.x + c * radius, center.y + s * radius)
 }
 
+#[allow(dead_code)]
 fn draw_ring_bars(
     painter: &egui::Painter,
     center: Pos2,

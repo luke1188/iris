@@ -43,11 +43,23 @@ pub enum SpectrumStyle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SpectrumLayout {
-    /// Full circle, bass → highs.
+    /// Frequency increases clockwise around the full 360° ring.
+    #[serde(alias = "full")]
+    Continuous,
+    /// Half the spectrum mirrored across the center. Bass sits at the seam.
     #[default]
-    Full,
-    /// Lows / mids / highs mirrored on the left and right (no bass on the ring).
+    Mirrored,
+    /// Legacy Trap Nation bass-ear layout.
     Split,
+}
+
+/// Outer cap of each radial bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BarCap {
+    #[default]
+    Square,
+    Rounded,
 }
 
 /// Color style for the center oscilloscope.
@@ -364,10 +376,10 @@ impl Default for StageSettings {
             background_pan_x: 0.0,
             background_pan_y: 0.0,
             logo_size: 0.72,
-            disc_radius: 0.14,
+            disc_radius: 0.145,
             logo_glow: 0.0,
-            bass_pulse: 0.1,
-            beat_pulse: 0.18,
+            bass_pulse: 0.08,
+            beat_pulse: 0.14,
             logo_offset_x: 0.0,
             logo_offset_y: 0.0,
             logo_tint_r: 1.0,
@@ -407,7 +419,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             last_audio_device: None,
-            last_preset: Some("rgb".into()),
+            last_preset: Some("default".into()),
             show_debug: true,
             tuning: BandTuning::default(),
             background_path: None,
@@ -524,6 +536,45 @@ pub struct VisualizerSettings {
     /// Scroll speed when `color_mode` is Cycle.
     #[serde(default = "default_cycle_speed")]
     pub cycle_speed: f32,
+    #[serde(default = "default_min_frequency")]
+    pub min_frequency: f32,
+    #[serde(default = "default_max_frequency")]
+    pub max_frequency: f32,
+    #[serde(default = "default_attack_ms")]
+    pub attack_ms: f32,
+    #[serde(default = "default_release_ms")]
+    pub release_ms: f32,
+    #[serde(default = "default_noise_floor_db")]
+    pub noise_floor_db: f32,
+    #[serde(default = "default_ceiling_db")]
+    pub ceiling_db: f32,
+    #[serde(default = "default_response_exponent")]
+    pub response_exponent: f32,
+    #[serde(default = "default_frequency_smoothing")]
+    pub frequency_smoothing: f32,
+    #[serde(default = "default_transient_scale")]
+    pub transient_scale: f32,
+    /// Turns from 12 o'clock (0.5 = bass at the bottom in Mirrored mode).
+    #[serde(default = "default_rotation_offset")]
+    pub rotation_offset: f32,
+    #[serde(default)]
+    pub reverse_spectrum: bool,
+    /// Fraction of each angular slot filled by a bar (rest is the gap).
+    #[serde(default = "default_bar_fill")]
+    pub bar_fill: f32,
+    /// Resting bar height as a fraction of the shorter viewport axis.
+    #[serde(default = "default_min_bar_height")]
+    pub min_bar_height: f32,
+    #[serde(default)]
+    pub show_base_ring: bool,
+    #[serde(default = "default_base_ring_width")]
+    pub base_ring_width: f32,
+    #[serde(default = "default_base_ring_brightness")]
+    pub base_ring_brightness: f32,
+    #[serde(default)]
+    pub bar_cap: BarCap,
+    #[serde(default)]
+    pub show_peak_caps: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -578,6 +629,48 @@ fn default_outline_smooth() -> f32 {
 }
 fn default_cycle_speed() -> f32 {
     0.18
+}
+fn default_min_frequency() -> f32 {
+    30.0
+}
+fn default_max_frequency() -> f32 {
+    16_000.0
+}
+fn default_attack_ms() -> f32 {
+    28.0
+}
+fn default_release_ms() -> f32 {
+    210.0
+}
+fn default_noise_floor_db() -> f32 {
+    -66.0
+}
+fn default_ceiling_db() -> f32 {
+    -14.0
+}
+fn default_response_exponent() -> f32 {
+    1.7
+}
+fn default_frequency_smoothing() -> f32 {
+    0.34
+}
+fn default_transient_scale() -> f32 {
+    0.12
+}
+fn default_rotation_offset() -> f32 {
+    0.5
+}
+fn default_bar_fill() -> f32 {
+    0.74
+}
+fn default_min_bar_height() -> f32 {
+    0.008
+}
+fn default_base_ring_width() -> f32 {
+    1.15
+}
+fn default_base_ring_brightness() -> f32 {
+    0.16
 }
 fn default_particle_solid() -> RgbColor {
     RgbColor::new(0.35, 0.85, 1.0)
@@ -680,28 +773,28 @@ pub struct ColorSettings {
 }
 
 fn default_solid_color() -> RgbColor {
-    RgbColor::new(0.15, 0.85, 1.0)
+    RgbColor::new(0.18, 0.95, 1.0)
 }
 fn default_gradient_low() -> RgbColor {
-    RgbColor::new(1.0, 0.2, 0.45)
+    RgbColor::new(0.18, 0.95, 1.0)
 }
 fn default_gradient_high() -> RgbColor {
-    RgbColor::new(0.2, 0.85, 1.0)
+    RgbColor::new(1.0, 0.32, 0.72)
 }
 fn default_band_bass() -> RgbColor {
-    RgbColor::new(1.0, 0.2, 0.35)
+    RgbColor::new(0.18, 0.95, 1.0)
 }
 fn default_band_low_mid() -> RgbColor {
-    RgbColor::new(1.0, 0.55, 0.15)
+    RgbColor::new(0.22, 0.50, 1.0)
 }
 fn default_band_mid() -> RgbColor {
-    RgbColor::new(1.0, 0.9, 0.2)
+    RgbColor::new(0.62, 0.22, 1.0)
 }
 fn default_band_high_mid() -> RgbColor {
-    RgbColor::new(0.25, 0.95, 0.45)
+    RgbColor::new(0.98, 0.16, 0.90)
 }
 fn default_band_high() -> RgbColor {
-    RgbColor::new(0.25, 0.65, 1.0)
+    RgbColor::new(1.0, 0.40, 0.62)
 }
 
 impl Default for VisualizerSettings {
@@ -709,26 +802,65 @@ impl Default for VisualizerSettings {
         Self {
             style: SpectrumStyle::Bars,
             color_mode: ColorMode::Rainbow,
-            layout: SpectrumLayout::Full,
+            layout: SpectrumLayout::Mirrored,
             radius: 0.22,
             thickness: 2.0,
-            sensitivity: 1.4,
-            smoothing: 0.38,
-            bass_response: 1.2,
-            mid_response: 1.0,
-            high_response: 0.9,
-            max_bar_length: 0.55,
-            glow: 0.5,
-            segment_count: 256,
+            sensitivity: 1.25,
+            smoothing: 0.40,
+            bass_response: 0.95,
+            mid_response: 1.12,
+            high_response: 0.88,
+            max_bar_length: 0.36,
+            glow: 0.48,
+            segment_count: 192,
             ear_gain: 1.45,
             ear_count: 2,
             ear_angle: 0.20,
             ear_width: 0.075,
             ear_radius: 0.06,
-            outline_width: 1.45,
-            outline_smooth: 0.45,
-            cycle_speed: 0.18,
+            outline_width: 1.40,
+            outline_smooth: 0.40,
+            cycle_speed: 0.15,
+            min_frequency: 30.0,
+            max_frequency: 16_000.0,
+            attack_ms: 28.0,
+            release_ms: 210.0,
+            noise_floor_db: -66.0,
+            ceiling_db: -14.0,
+            response_exponent: 1.7,
+            frequency_smoothing: 0.34,
+            transient_scale: 0.12,
+            rotation_offset: 0.5,
+            reverse_spectrum: false,
+            bar_fill: 0.74,
+            min_bar_height: 0.008,
+            show_base_ring: false,
+            base_ring_width: 1.15,
+            base_ring_brightness: 0.16,
+            bar_cap: BarCap::Square,
+            show_peak_caps: false,
         }
+    }
+}
+
+impl VisualizerSettings {
+    pub fn analysis_config(&self, tuning: &BandTuning) -> crate::audio::SpectrumAnalysisConfig {
+        crate::audio::SpectrumAnalysisConfig::from_visualizer(
+            self.segment_count,
+            self.min_frequency,
+            self.max_frequency,
+            self.attack_ms,
+            self.release_ms,
+            self.noise_floor_db,
+            self.ceiling_db,
+            self.response_exponent,
+            self.frequency_smoothing,
+            self.bass_response,
+            self.mid_response,
+            self.high_response,
+            self.transient_scale,
+            self.sensitivity * tuning.sensitivity,
+        )
     }
 }
 
@@ -828,8 +960,8 @@ impl BeatSettings {
 impl Default for ColorSettings {
     fn default() -> Self {
         Self {
-            rgb_intensity: 1.0,
-            glow_intensity: 0.6,
+            rgb_intensity: 1.08,
+            glow_intensity: 0.5,
             solid: default_solid_color(),
             gradient_low: default_gradient_low(),
             gradient_high: default_gradient_high(),
@@ -849,7 +981,7 @@ impl ColorSettings {
     }
 
     /// Like [`sample`](Self::sample), with a time offset for `ColorMode::Cycle`.
-    pub fn sample_cycled(
+    pub     fn sample_cycled(
         &self,
         mode: ColorMode,
         t: f32,
@@ -857,14 +989,14 @@ impl ColorSettings {
         cycle: f32,
     ) -> RgbColor {
         let boost = (intensity * self.rgb_intensity).clamp(0.35, 1.35);
-        let t = t.fract();
+        let t = t.rem_euclid(1.0);
         match mode {
             ColorMode::Rainbow => {
-                let (r, g, b) = neon_rainbow(t);
+                let (r, g, b) = neon_ring_gradient(t);
                 RgbColor::new(r, g, b).scale(boost.min(1.0))
             }
             ColorMode::Cycle => {
-                let (r, g, b) = neon_rainbow((t + cycle).fract());
+                let (r, g, b) = neon_ring_gradient((t + cycle).rem_euclid(1.0));
                 RgbColor::new(r, g, b).scale(boost.min(1.0))
             }
             ColorMode::Solid => self.solid.scale(boost.min(1.0)),
@@ -900,7 +1032,7 @@ impl ColorSettings {
                 } else {
                     ((t - t0) / (t1 - t0)).clamp(0.0, 1.0)
                 };
-                let u = (1.0 - (u * std::f32::consts::PI).cos()) * 0.5;
+                let u = u * u * (3.0 - 2.0 * u);
                 return c0.lerp(c1, u);
             }
         }
@@ -908,7 +1040,46 @@ impl ColorSettings {
     }
 }
 
-/// Neon rainbow stops shared by spectrum / FFT.
+/// Frequency neon: cyan → electric blue → violet → magenta → pink.
+/// `t` is 0 at bass and 1 at highs (does not wrap back to cyan).
+pub fn neon_ring_gradient(t: f32) -> (f32, f32, f32) {
+    const STOPS: [(f32, f32, f32, f32); 5] = [
+        (0.00, 0.18, 0.98, 1.00),
+        (0.24, 0.20, 0.50, 1.00),
+        (0.48, 0.62, 0.22, 1.00),
+        (0.74, 0.98, 0.16, 0.90),
+        (1.00, 1.00, 0.40, 0.62),
+    ];
+    sample_positioned_stops(t, &STOPS)
+}
+
+fn sample_positioned_stops(t: f32, stops: &[(f32, f32, f32, f32)]) -> (f32, f32, f32) {
+    let t = t.clamp(0.0, 1.0);
+    if stops.is_empty() {
+        return (1.0, 1.0, 1.0);
+    }
+    if t <= stops[0].0 {
+        return (stops[0].1, stops[0].2, stops[0].3);
+    }
+    for w in stops.windows(2) {
+        let a = w[0];
+        let b = w[1];
+        if t <= b.0 {
+            let span = (b.0 - a.0).max(1e-5);
+            let mut u = ((t - a.0) / span).clamp(0.0, 1.0);
+            u = u * u * (3.0 - 2.0 * u);
+            return (
+                a.1 + (b.1 - a.1) * u,
+                a.2 + (b.2 - a.2) * u,
+                a.3 + (b.3 - a.3) * u,
+            );
+        }
+    }
+    let last = stops[stops.len() - 1];
+    (last.1, last.2, last.3)
+}
+
+/// Neon rainbow stops shared by particles / FFT extras.
 pub fn neon_rainbow(t: f32) -> (f32, f32, f32) {
     const STOPS: [(f32, f32, f32); 6] = [
         (1.00, 0.20, 0.35),
@@ -997,7 +1168,17 @@ fn builtin_preset_names() -> &'static [&'static str] {
     ]
 }
 
-/// Safe file stem for a preset name (spaces → `_`, strip unsafe chars).
+/// Built-in factory preset name. Cannot be overwritten by user saves.
+pub const FACTORY_PRESET_NAME: &str = "default";
+
+pub fn is_locked_preset(name: &str) -> bool {
+    sanitize_preset_name(name).eq_ignore_ascii_case(FACTORY_PRESET_NAME)
+}
+
+/// Recommended look + tuning. Source of truth is the Rust `Default` impls.
+pub fn factory_preset() -> Preset {
+    Preset::default()
+}
 pub fn sanitize_preset_name(name: &str) -> String {
     let trimmed = name.trim();
     let mut out = String::with_capacity(trimmed.len());
@@ -1072,12 +1253,18 @@ pub fn list_presets() -> Vec<String> {
         .map(|s| (*s).to_string())
         .collect();
     collect_preset_names(&user_presets_dir(), &mut names);
+    names.retain(|n| !is_locked_preset(n));
     names.sort();
     names.dedup();
-    names
+    let mut out = vec![FACTORY_PRESET_NAME.to_string()];
+    out.extend(names);
+    out
 }
 
 pub fn load_preset(name: &str) -> Result<Preset> {
+    if is_locked_preset(name) {
+        return Ok(factory_preset());
+    }
     // User saves override built-ins of the same name.
     let user_path = user_presets_dir().join(format!("{name}.toml"));
     let text = if user_path.exists() {
@@ -1095,10 +1282,13 @@ pub fn load_preset(name: &str) -> Result<Preset> {
 }
 
 pub fn save_preset(preset: &Preset) -> Result<PathBuf> {
+    let safe = sanitize_preset_name(&preset.name);
+    if is_locked_preset(&safe) {
+        anyhow::bail!("'{FACTORY_PRESET_NAME}' is a built-in factory preset and cannot be overwritten");
+    }
     let dir = user_presets_dir();
     fs::create_dir_all(&dir)
         .with_context(|| format!("Creating presets folder {dir:?}"))?;
-    let safe = sanitize_preset_name(&preset.name);
     let path = dir.join(format!("{safe}.toml"));
     let mut to_write = preset.clone();
     to_write.name = safe;

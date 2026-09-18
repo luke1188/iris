@@ -9,3 +9,4 @@ mod renderer;
 mod spectrum;
 
 pub use particles::ParticleSystem;
+pub use spectrum::RadialSpectrum;
