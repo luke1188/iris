@@ -2,24 +2,125 @@
 
 use crate::audio::{AudioCapture, AudioDeviceInfo, AudioFeatures, Analyzer};
 use crate::config::{
-    list_presets, load_preset, load_settings, sanitize_preset_name, save_preset, save_settings,
-    AppSettings, LogoMotion, LogoStyle, StageSettings,
+    list_user_presets, load_preset, load_settings, load_template, sanitize_preset_name,
+    save_preset, save_settings, AppSettings, BannerItem, LogoMotion, LogoStyle, LogoTransition,
+    StageSettings,
 };
 use crate::display::{is_fullscreen, toggle_fullscreen};
-use crate::renderer::ParticleSystem;
+use crate::renderer::{ParticleSystem, RadialSpectrum};
 use eframe::egui;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::media::{self, LoadedTexture};
+use super::media::{self, LoadedTexture, StageBackground};
 use super::ui;
+use super::usage::UsageSampler;
+use super::video;
+
+const FADE_SECS_MIN: f32 = 0.05;
+const FADE_SECS_MAX: f32 = 2.0;
+
+fn clamp_fade_secs(item: f32, fallback: f32) -> f32 {
+    let v = if item >= FADE_SECS_MIN {
+        item
+    } else {
+        fallback
+    };
+    v.clamp(FADE_SECS_MIN, FADE_SECS_MAX)
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct FrameTiming {
     pub fps: f32,
     pub frame_ms: f32,
     pub audio_ms: f32,
+    pub cpu_percent: f32,
+    pub gpu_percent: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CrtPhase {
+    Idle,
+    /// Flatten current item → line → point (0..1).
+    Out(f32),
+    /// Point → line → expand new item (0..1).
+    In(f32),
+}
+
+impl CrtPhase {
+    pub fn factors(self, kind: LogoTransition) -> (f32, f32, f32) {
+        match kind {
+            LogoTransition::ShrinkFade => self.shrink_fade_factors(),
+            LogoTransition::Crt => self.crt_factors(),
+            LogoTransition::Cut | LogoTransition::Glitch => (1.0, 1.0, 1.0),
+        }
+    }
+
+    fn crt_factors(self) -> (f32, f32, f32) {
+        match self {
+            CrtPhase::Idle => (1.0, 1.0, 1.0),
+            CrtPhase::Out(t) => {
+                let t = t.clamp(0.0, 1.0);
+                if t < 0.55 {
+                    let u = t / 0.55;
+                    let u = u * u * (3.0 - 2.0 * u);
+                    (1.0, (1.0 - u * 0.97).max(0.025), 1.0)
+                } else {
+                    let u = ((t - 0.55) / 0.45).clamp(0.0, 1.0);
+                    let u = u * u;
+                    ((1.0 - u).max(0.02), 0.025, 1.0 - u * 0.35)
+                }
+            }
+            CrtPhase::In(t) => {
+                let t = t.clamp(0.0, 1.0);
+                if t < 0.45 {
+                    let u = t / 0.45;
+                    let u = u * u;
+                    (u.max(0.02), 0.025, 0.65 + 0.35 * u)
+                } else {
+                    let u = ((t - 0.45) / 0.55).clamp(0.0, 1.0);
+                    let u = u * u * (3.0 - 2.0 * u);
+                    (1.0, 0.025 + u * 0.975, 1.0)
+                }
+            }
+        }
+    }
+
+    fn shrink_fade_factors(self) -> (f32, f32, f32) {
+        match self {
+            CrtPhase::Idle => (1.0, 1.0, 1.0),
+            CrtPhase::Out(t) => {
+                let u = t.clamp(0.0, 1.0);
+                let u = u * u * (3.0 - 2.0 * u);
+                let scale = (1.0 - u).max(0.02);
+                let alpha = (1.0 - u).powf(0.9);
+                (scale, scale, alpha)
+            }
+            CrtPhase::In(t) => {
+                let u = t.clamp(0.0, 1.0);
+                let u = u * u * (3.0 - 2.0 * u);
+                (1.0, 1.0, u)
+            }
+        }
+    }
+
+    pub fn is_busy(self) -> bool {
+        !matches!(self, CrtPhase::Idle)
+    }
+}
+
+/// Slide / dwell cycle for stage advertisement banners.
+#[derive(Debug, Clone, Copy)]
+pub enum BannerPhase {
+    /// Waiting before the next slide-in.
+    Hidden { left: f32 },
+    /// `t` goes 0 → 1 while entering.
+    In { t: f32 },
+    /// Fully visible; `left` counts down unless always-on single card.
+    Shown { left: f32 },
+    /// `t` goes 0 → 1 while exiting.
+    Out { t: f32 },
 }
 
 pub struct LiveVisualizerApp {
@@ -38,8 +139,15 @@ pub struct LiveVisualizerApp {
     pub timing: FrameTiming,
     pub error_message: Option<String>,
     pub status_message: Option<String>,
-    pub background: Option<LoadedTexture>,
-    pub logos: Vec<LoadedTexture>,
+    pub background: Option<StageBackground>,
+    /// Parallel to `settings.logo_paths` — `None` for Scope/Spectrum effect slots.
+    pub logos: Vec<Option<LoadedTexture>>,
+    /// Parallel to `settings.banners.items` — textures for optional QR / art.
+    pub banner_textures: Vec<Option<LoadedTexture>>,
+    pub banner_index: usize,
+    pub banner_phase: BannerPhase,
+    /// Selected banner row in the Ads settings UI.
+    pub banner_edit_index: usize,
     pub logo_index: usize,
     pub logo_from_index: usize,
     /// Hold countdown until next logo (seconds).
@@ -50,6 +158,7 @@ pub struct LiveVisualizerApp {
     pub logo_beat_glitch_t: f32,
     last_beat_for_glitch: f32,
     pub particles: ParticleSystem,
+    pub radial_spectrum: RadialSpectrum,
     pub preset_names: Vec<String>,
     pub preset_save_name: String,
     /// Session settings need writing to settings.toml.
@@ -63,10 +172,23 @@ pub struct LiveVisualizerApp {
     pub logo_angle: f32,
     /// Phase for wobble / pendulum (radians).
     pub logo_motion_phase: f32,
+    /// Smoothed heights for the Apple-style center spectrum bars.
+    pub center_bars_smooth: Vec<f32>,
+    /// CRT / shrink-fade timeline: Idle / collapsing out / expanding in.
+    pub crt_phase: CrtPhase,
+    /// Which animation is running for the current switch.
+    pub switch_transition: LogoTransition,
+    /// Fade-out duration for the current switch (seconds).
+    pub switch_fade_out_secs: f32,
+    /// Fade-in duration for the current switch (seconds).
+    pub switch_fade_in_secs: f32,
+    /// Index to reveal after CRT-out completes.
+    pub crt_pending_index: usize,
     last_frame: Instant,
     frame_count: u32,
     fps_timer: Instant,
     save_timer: Instant,
+    usage: UsageSampler,
     pub features_shared: Arc<parking_lot::Mutex<AudioFeatures>>,
 }
 
@@ -112,11 +234,13 @@ impl LiveVisualizerApp {
         analyzer.beat_mut().apply_settings(&settings.beat);
 
         let particles = ParticleSystem::new(settings.particles.clone());
-        let preset_names = list_presets();
+        let preset_names = list_user_presets();
         let preset_save_name = settings
             .last_preset
-            .clone()
-            .unwrap_or_else(|| "custom".into());
+            .as_deref()
+            .filter(|n| !crate::config::is_template(n))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "my_look".into());
 
         let mut app = Self {
             settings,
@@ -136,6 +260,10 @@ impl LiveVisualizerApp {
             status_message: None,
             background: None,
             logos: Vec::new(),
+            banner_textures: Vec::new(),
+            banner_index: 0,
+            banner_phase: BannerPhase::Hidden { left: 0.8 },
+            banner_edit_index: 0,
             logo_index: 0,
             logo_from_index: 0,
             logo_hold_left: 8.0,
@@ -143,6 +271,7 @@ impl LiveVisualizerApp {
             logo_beat_glitch_t: 0.0,
             last_beat_for_glitch: 0.0,
             particles,
+            radial_spectrum: RadialSpectrum::new(),
             preset_names,
             preset_save_name,
             settings_dirty: false,
@@ -151,10 +280,17 @@ impl LiveVisualizerApp {
             shutting_down: false,
             logo_angle: 0.0,
             logo_motion_phase: 0.0,
+            center_bars_smooth: vec![0.0; 21],
+            crt_phase: CrtPhase::Idle,
+            switch_transition: LogoTransition::Glitch,
+            switch_fade_out_secs: 0.40,
+            switch_fade_in_secs: 0.55,
+            crt_pending_index: 0,
             last_frame: Instant::now(),
             frame_count: 0,
             fps_timer: Instant::now(),
             save_timer: Instant::now(),
+            usage: UsageSampler::new(),
             features_shared: Arc::new(parking_lot::Mutex::new(AudioFeatures::default())),
         };
 
@@ -165,12 +301,32 @@ impl LiveVisualizerApp {
         }
         if !app.settings.logo_paths.is_empty() {
             let paths = app.settings.logo_paths.clone();
-            for (i, path) in paths.iter().enumerate() {
-                if let Err(e) = app.push_logo_with_ctx(&cc.egui_ctx, PathBuf::from(path), i == 0) {
+            app.logos.clear();
+            for path in &paths {
+                if crate::config::is_center_effect(path) {
+                    app.logos.push(None);
+                } else if let Err(e) =
+                    app.load_logo_texture(&cc.egui_ctx, PathBuf::from(path))
+                {
                     log::warn!("Could not restore logo {path}: {e}");
+                    app.logos.push(None);
                 }
             }
+            // Keep paths/styles as saved; textures aligned by index.
+            while app.logos.len() < app.settings.logo_paths.len() {
+                app.logos.push(None);
+            }
+            app.logo_index = 0;
             app.logo_hold_left = app.settings.stage.logo_hold_secs.max(1.0);
+        }
+        app.restore_banner_textures(&cc.egui_ctx);
+        if app.settings.banners.enabled && !app.settings.banners.items.is_empty() {
+            let gap = if app.settings.banners.always_on {
+                0.2
+            } else {
+                1.0
+            };
+            app.banner_phase = BannerPhase::Hidden { left: gap };
         }
 
         app
@@ -218,6 +374,11 @@ impl LiveVisualizerApp {
         self.settings.tuning = self.analyzer.tuning.clone();
     }
 
+    /// Session-only dirty (ads, device) — does not mark the look preset edited.
+    pub fn mark_session_dirty(&mut self) {
+        self.settings_dirty = true;
+    }
+
     pub fn apply_tuning_from_ui(&mut self) {
         self.settings.tuning = self.analyzer.tuning.clone();
         self.settings_dirty = true;
@@ -225,31 +386,61 @@ impl LiveVisualizerApp {
         self.pending_preset_load = None;
     }
 
+    /// Apply a starter template or a user preset. Dirty working look needs a second click to discard.
     pub fn apply_preset_by_name(&mut self, name: &str) {
+        let safe = sanitize_preset_name(name);
         if self.preset_dirty {
-            if self.pending_preset_load.as_deref() != Some(name) {
-                self.pending_preset_load = Some(name.to_string());
+            if self.pending_preset_load.as_deref() != Some(safe.as_str()) {
+                self.pending_preset_load = Some(safe.clone());
+                let hint = if crate::config::is_template(&safe) {
+                    crate::config::template_label(&safe)
+                } else {
+                    safe.as_str()
+                };
                 self.status_message = Some(format!(
-                    "Unsaved preset edits — Save first, or click '{name}' again to discard"
+                    "Unsaved changes — Save as…, or click '{hint}' again to discard"
                 ));
                 return;
             }
         }
         self.pending_preset_load = None;
 
-        match load_preset(name) {
+        if crate::config::is_template(&safe) {
+            self.apply_loaded_preset(load_template(&safe), &safe, true);
+        } else {
+            self.apply_loaded_preset(load_preset(&safe), &safe, false);
+        }
+    }
+
+    fn apply_loaded_preset(
+        &mut self,
+        result: anyhow::Result<crate::config::Preset>,
+        name: &str,
+        is_template: bool,
+    ) {
+        match result {
             Ok(preset) => {
                 self.settings.apply_preset(&preset);
+                self.settings.last_preset = Some(name.to_string());
                 self.analyzer.set_tuning(self.settings.tuning.clone());
                 self.analyzer.beat_mut().apply_settings(&self.settings.beat);
                 self.particles.set_settings(self.settings.particles.clone());
-                self.preset_save_name = name.to_string();
+                if !is_template {
+                    self.preset_save_name = name.to_string();
+                }
                 self.preset_dirty = false;
-                // Persist session (which preset is active) without marking the preset dirty.
+                // Persist session (active look) — not a named preset save.
                 self.settings_dirty = true;
                 self.error_message = None;
-                self.status_message = Some(format!("Loaded preset '{name}'"));
-                log::info!("Loaded preset '{name}'");
+                self.status_message = Some(if is_template {
+                    format!(
+                        "Applied starter {} — tweak, then Save as…",
+                        crate::config::template_label(name)
+                    )
+                } else {
+                    format!("Loaded '{name}'")
+                });
+                log::info!("Loaded preset '{name}' (template={is_template})");
             }
             Err(e) => {
                 self.status_message = None;
@@ -258,23 +449,39 @@ impl LiveVisualizerApp {
         }
     }
 
+    pub fn reset_to_factory(&mut self) {
+        self.pending_preset_load = None;
+        self.apply_loaded_preset(
+            load_template(crate::config::FACTORY_PRESET_NAME),
+            crate::config::FACTORY_PRESET_NAME,
+            true,
+        );
+    }
+
     pub fn save_current_preset(&mut self) {
         let name = sanitize_preset_name(&self.preset_save_name);
         self.preset_save_name = name.clone();
         if name.is_empty() {
-            self.error_message = Some("Enter a preset name before saving".into());
+            self.error_message = Some("Enter a name before saving".into());
+            return;
+        }
+        if crate::config::is_template(&name) {
+            self.error_message = Some(
+                "Starter templates cannot be overwritten — choose a new name under Save as…"
+                    .into(),
+            );
             return;
         }
         let preset = self.settings.to_preset(&name);
         match save_preset(&preset) {
             Ok(path) => {
                 self.settings.last_preset = Some(name.clone());
-                self.preset_names = list_presets();
+                self.preset_names = list_user_presets();
                 self.preset_dirty = false;
                 self.pending_preset_load = None;
                 self.settings_dirty = true;
                 self.error_message = None;
-                self.status_message = Some(format!("Saved preset '{name}' → {}", path.display()));
+                self.status_message = Some(format!("Saved '{name}' → {}", path.display()));
                 log::info!("Saved preset to {}", path.display());
             }
             Err(e) => {
@@ -285,13 +492,220 @@ impl LiveVisualizerApp {
     }
 
     pub fn refresh_presets(&mut self) {
-        self.preset_names = list_presets();
+        self.preset_names = list_user_presets();
+    }
+
+    pub fn restore_banner_textures(&mut self, ctx: &egui::Context) {
+        self.banner_textures.clear();
+        let paths: Vec<Option<String>> = self
+            .settings
+            .banners
+            .items
+            .iter()
+            .map(|i| i.image_path.clone())
+            .collect();
+        for (i, path) in paths.into_iter().enumerate() {
+            match path {
+                Some(p) if !p.is_empty() => {
+                    match media::load_texture_from_path(ctx, PathBuf::from(&p).as_path(), &format!("banner_{i}"))
+                    {
+                        Ok(tex) => self.banner_textures.push(Some(tex)),
+                        Err(e) => {
+                            log::warn!("Could not restore banner image {p}: {e}");
+                            self.banner_textures.push(None);
+                        }
+                    }
+                }
+                _ => self.banner_textures.push(None),
+            }
+        }
+        if self.banner_edit_index >= self.settings.banners.items.len() {
+            self.banner_edit_index = self.settings.banners.items.len().saturating_sub(1);
+        }
+        if self.banner_index >= self.settings.banners.items.len() {
+            self.banner_index = 0;
+        }
+    }
+
+    pub fn add_banner(&mut self) {
+        self.settings.banners.items.push(BannerItem::default());
+        self.banner_textures.push(None);
+        self.banner_edit_index = self.settings.banners.items.len().saturating_sub(1);
+        if self.settings.banners.enabled && matches!(self.banner_phase, BannerPhase::Hidden { .. }) {
+            self.banner_phase = BannerPhase::Hidden { left: 0.35 };
+        }
+        self.mark_session_dirty();
+    }
+
+    pub fn remove_banner_at(&mut self, index: usize) {
+        if index >= self.settings.banners.items.len() {
+            return;
+        }
+        self.settings.banners.items.remove(index);
+        if index < self.banner_textures.len() {
+            self.banner_textures.remove(index);
+        }
+        if self.banner_edit_index >= self.settings.banners.items.len() {
+            self.banner_edit_index = self.settings.banners.items.len().saturating_sub(1);
+        }
+        if self.banner_index >= self.settings.banners.items.len() {
+            self.banner_index = 0;
+        }
+        if self.settings.banners.items.is_empty() {
+            self.banner_phase = BannerPhase::Hidden { left: 1.0 };
+        }
+        self.mark_session_dirty();
+    }
+
+    pub fn pick_banner_image(&mut self, ctx: &egui::Context, index: usize) {
+        if index >= self.settings.banners.items.len() {
+            return;
+        }
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "svg", "svgz"])
+            .set_title("Banner image (QR / logo)")
+            .pick_file()
+        {
+            let name = format!("banner_{index}");
+            match media::load_texture_from_path(ctx, &path, &name) {
+                Ok(tex) => {
+                    while self.banner_textures.len() <= index {
+                        self.banner_textures.push(None);
+                    }
+                    self.banner_textures[index] = Some(tex);
+                    self.settings.banners.items[index].image_path =
+                        Some(path.display().to_string());
+                    self.mark_session_dirty();
+                    self.error_message = None;
+                    self.status_message = Some("Banner image loaded".into());
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Banner image failed: {e}"));
+                }
+            }
+        }
+    }
+
+    pub fn clear_banner_image(&mut self, index: usize) {
+        if index >= self.settings.banners.items.len() {
+            return;
+        }
+        self.settings.banners.items[index].image_path = None;
+        if index < self.banner_textures.len() {
+            self.banner_textures[index] = None;
+        }
+        self.mark_session_dirty();
+    }
+
+    /// Progress through hide → slide in → dwell → slide out → next.
+    pub fn tick_banners(&mut self, dt: f32) {
+        let cfg = &self.settings.banners;
+        if !cfg.enabled || cfg.items.is_empty() {
+            return;
+        }
+        let n = cfg.items.len();
+        let slide = cfg.slide_secs.clamp(0.15, 2.5);
+        let hold = cfg.hold_secs.clamp(1.0, 300.0);
+        let gap = cfg.gap_secs.clamp(0.0, 600.0);
+        let always = cfg.always_on;
+
+        match self.banner_phase {
+            BannerPhase::Hidden { left } => {
+                let left = left - dt;
+                if left <= 0.0 {
+                    if self.banner_index >= n {
+                        self.banner_index = 0;
+                    }
+                    self.banner_phase = BannerPhase::In { t: 0.0 };
+                } else {
+                    self.banner_phase = BannerPhase::Hidden { left };
+                }
+            }
+            BannerPhase::In { t } => {
+                let t = (t + dt / slide).min(1.0);
+                if t >= 1.0 {
+                    let left = if always && n == 1 {
+                        f32::INFINITY
+                    } else {
+                        hold
+                    };
+                    self.banner_phase = BannerPhase::Shown { left };
+                } else {
+                    self.banner_phase = BannerPhase::In { t };
+                }
+            }
+            BannerPhase::Shown { left } => {
+                if !left.is_finite() {
+                    return;
+                }
+                let left = left - dt;
+                if left <= 0.0 {
+                    if always && n == 1 {
+                        self.banner_phase = BannerPhase::Shown {
+                            left: f32::INFINITY,
+                        };
+                    } else if always && n > 1 {
+                        // Cross to the next card without a long gap.
+                        self.banner_phase = BannerPhase::Out { t: 0.0 };
+                    } else {
+                        self.banner_phase = BannerPhase::Out { t: 0.0 };
+                    }
+                } else {
+                    self.banner_phase = BannerPhase::Shown { left };
+                }
+            }
+            BannerPhase::Out { t } => {
+                let t = (t + dt / slide).min(1.0);
+                if t >= 1.0 {
+                    self.banner_index = (self.banner_index + 1) % n;
+                    if always {
+                        self.banner_phase = BannerPhase::In { t: 0.0 };
+                    } else {
+                        self.banner_phase = BannerPhase::Hidden {
+                            left: gap.max(0.05),
+                        };
+                    }
+                } else {
+                    self.banner_phase = BannerPhase::Out { t };
+                }
+            }
+        }
+    }
+
+    /// 0 = fully off-screen, 1 = parked. Also whether we should paint.
+    pub fn banner_slide_amount(&self) -> Option<(usize, f32)> {
+        let cfg = &self.settings.banners;
+        if !cfg.enabled || cfg.items.is_empty() {
+            return None;
+        }
+        let idx = self.banner_index.min(cfg.items.len() - 1);
+        let amount = match self.banner_phase {
+            BannerPhase::Hidden { .. } => return None,
+            BannerPhase::In { t } => {
+                let u = t.clamp(0.0, 1.0);
+                u * u * (3.0 - 2.0 * u)
+            }
+            BannerPhase::Shown { .. } => 1.0,
+            BannerPhase::Out { t } => {
+                let u = t.clamp(0.0, 1.0);
+                let e = u * u * (3.0 - 2.0 * u);
+                1.0 - e
+            }
+        };
+        Some((idx, amount))
     }
 
     pub fn pick_background(&mut self, ctx: &egui::Context) {
         if let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "Images & video",
+                &[
+                    "png", "jpg", "jpeg", "webp", "bmp", "svg", "svgz", "mp4", "m4v", "mov",
+                ],
+            )
             .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "svg", "svgz"])
-            .set_title("Select background image")
+            .add_filter("Video", &["mp4", "m4v", "mov"])
+            .set_title("Select background image or video")
             .pick_file()
         {
             if let Err(e) = self.load_background_with_ctx(ctx, path) {
@@ -341,11 +755,31 @@ impl LiveVisualizerApp {
         ctx: &egui::Context,
         path: PathBuf,
     ) -> anyhow::Result<()> {
-        let tex = media::load_texture_from_path(ctx, &path, "background")?;
+        self.background = None;
+        let bg = if video::is_video_path(&path) {
+            let vid = video::load_video_background(ctx, &path)?;
+            self.status_message = Some("Background video looping (H.264, silent)".into());
+            StageBackground::Video(vid)
+        } else {
+            let tex = media::load_texture_from_path(ctx, &path, "background")?;
+            StageBackground::Image(tex)
+        };
         self.settings.background_path = Some(path.display().to_string());
-        self.background = Some(tex);
+        self.background = Some(bg);
         self.mark_settings_dirty();
         self.error_message = None;
+        Ok(())
+    }
+
+    /// Load a texture into the playlist without mutating path lists (restore path).
+    fn load_logo_texture(
+        &mut self,
+        ctx: &egui::Context,
+        path: PathBuf,
+    ) -> anyhow::Result<()> {
+        let name = format!("logo_{}", self.logos.len());
+        let tex = media::load_texture_from_path(ctx, &path, &name)?;
+        self.logos.push(Some(tex));
         Ok(())
     }
 
@@ -359,17 +793,15 @@ impl LiveVisualizerApp {
         let name = format!("logo_{}", self.logos.len());
         let tex = media::load_texture_from_path(ctx, &path, &name)?;
         let path_str = path.display().to_string();
-        if !self.settings.logo_paths.iter().any(|p| p == &path_str) {
-            self.settings.logo_paths.push(path_str.clone());
-            self.settings
-                .logo_styles
-                .push(LogoStyle::from_stage(&self.settings.stage));
-        }
+        self.settings.logo_paths.push(path_str.clone());
+        self.settings
+            .logo_styles
+            .push(LogoStyle::from_stage(&self.settings.stage));
         self.settings.sync_logo_styles();
         self.settings.logo_path = Some(path_str);
-        self.logos.push(tex);
+        self.logos.push(Some(tex));
         if select {
-            let next = self.logos.len() - 1;
+            let next = self.playlist_len().saturating_sub(1);
             self.begin_logo_switch(next);
         }
         self.mark_settings_dirty();
@@ -377,8 +809,25 @@ impl LiveVisualizerApp {
         Ok(())
     }
 
+    pub fn push_center_effect(&mut self, id: &str) {
+        self.settings.logo_paths.push(id.to_string());
+        self.settings
+            .logo_styles
+            .push(LogoStyle::from_stage(&self.settings.stage));
+        self.settings.sync_logo_styles();
+        self.logos.push(None);
+        let next = self.playlist_len().saturating_sub(1);
+        self.begin_logo_switch(next);
+        self.mark_settings_dirty();
+        self.status_message = Some(format!("Added {}", crate::config::center_item_label(id)));
+    }
+
+    pub fn playlist_len(&self) -> usize {
+        self.settings.logo_paths.len().min(self.logos.len())
+    }
+
     pub fn remove_logo_at(&mut self, index: usize) {
-        if index >= self.logos.len() {
+        if index >= self.playlist_len() {
             return;
         }
         self.logos.remove(index);
@@ -389,12 +838,12 @@ impl LiveVisualizerApp {
             self.settings.logo_styles.remove(index);
         }
         self.settings.sync_logo_styles();
-        if self.logos.is_empty() {
+        if self.playlist_len() == 0 {
             self.logo_index = 0;
             self.logo_from_index = 0;
             self.settings.logo_path = None;
         } else {
-            self.logo_index %= self.logos.len();
+            self.logo_index %= self.playlist_len();
             self.logo_from_index = self.logo_index;
             self.settings.logo_path = self.settings.logo_paths.get(self.logo_index).cloned();
         }
@@ -420,55 +869,126 @@ impl LiveVisualizerApp {
     }
 
     pub fn select_logo(&mut self, index: usize) {
-        if index < self.logos.len() && index != self.logo_index {
-            self.begin_logo_switch(index);
+        if index >= self.playlist_len() {
+            return;
+        }
+        // Manual pick pins the item until Autoplay is turned back on.
+        let was_auto = self.settings.stage.logo_autoplay;
+        if was_auto {
+            self.settings.stage.logo_autoplay = false;
             self.mark_settings_dirty();
+            self.status_message = Some("Autoplay paused — item pinned".into());
+        }
+        if index != self.logo_index {
+            self.begin_logo_switch(index);
+            if !was_auto {
+                self.mark_settings_dirty();
+            }
         }
     }
 
     fn begin_logo_switch(&mut self, next: usize) {
-        if self.logos.is_empty() {
+        if self.playlist_len() == 0 {
             return;
         }
-        let next = next % self.logos.len();
-        self.logo_from_index = self.logo_index.min(self.logos.len() - 1);
+        let next = next % self.playlist_len();
+        if next == self.logo_index && !self.crt_phase.is_busy() {
+            return;
+        }
+        let from = self.logo_index.min(self.playlist_len() - 1);
+        self.logo_from_index = from;
+
+        let incoming = self.settings.logo_style(next);
+        let kind = incoming.transition;
+        self.switch_transition = kind;
+        self.switch_fade_out_secs = clamp_fade_secs(
+            incoming.fade_out_secs,
+            self.settings.stage.logo_fade_out_secs,
+        );
+        self.switch_fade_in_secs = clamp_fade_secs(
+            incoming.fade_in_secs,
+            self.settings.stage.logo_fade_in_secs,
+        );
+
+        let hold = self.settings.logo_style(next).hold_secs.max(0.0);
+        let hold = if hold > 0.2 {
+            hold
+        } else {
+            self.settings.stage.logo_hold_secs.max(1.0)
+        };
+
+        if kind.uses_timeline() {
+            self.crt_pending_index = next;
+            self.crt_phase = CrtPhase::Out(0.0);
+            self.logo_switch_glitch_t = 0.0;
+            // Keep showing `from` until the out phase finishes; then swap + in.
+        } else {
+            self.logo_index = next;
+            self.logo_hold_left = hold;
+            self.crt_phase = CrtPhase::Idle;
+            self.logo_switch_glitch_t =
+                if kind == LogoTransition::Glitch && self.playlist_len() > 1 {
+                    1.0
+                } else {
+                    0.0
+                };
+            self.settings.logo_path = self.settings.logo_paths.get(next).cloned();
+        }
+    }
+
+    fn finish_crt_out(&mut self) {
+        let next = self.crt_pending_index % self.playlist_len().max(1);
         self.logo_index = next;
-        let hold = self
-            .settings
-            .logo_style(next)
-            .hold_secs
-            .max(0.0);
+        let hold = self.settings.logo_style(next).hold_secs.max(0.0);
         let hold = if hold > 0.2 {
             hold
         } else {
             self.settings.stage.logo_hold_secs.max(1.0)
         };
         self.logo_hold_left = hold;
-        // Transition glitch is its own envelope — not the beat glitch.
-        self.logo_switch_glitch_t =
-            if self.settings.stage.logo_glitch && self.logos.len() > 1 {
-                1.0
-            } else {
-                0.0
-            };
         self.settings.logo_path = self.settings.logo_paths.get(next).cloned();
+        self.crt_phase = CrtPhase::In(0.0);
     }
 
     fn tick_logo_cycle(&mut self, dt: f32) {
+        // Transition timeline.
+        let (out_secs, in_secs) = (
+            self.switch_fade_out_secs.clamp(FADE_SECS_MIN, FADE_SECS_MAX),
+            self.switch_fade_in_secs.clamp(FADE_SECS_MIN, FADE_SECS_MAX),
+        );
+        match self.crt_phase {
+            CrtPhase::Out(t) => {
+                let nt = t + dt / out_secs;
+                if nt >= 1.0 {
+                    self.finish_crt_out();
+                } else {
+                    self.crt_phase = CrtPhase::Out(nt);
+                }
+            }
+            CrtPhase::In(t) => {
+                let nt = t + dt / in_secs;
+                if nt >= 1.0 {
+                    self.crt_phase = CrtPhase::Idle;
+                } else {
+                    self.crt_phase = CrtPhase::In(nt);
+                }
+            }
+            CrtPhase::Idle => {}
+        }
+
         if self.logo_switch_glitch_t > 0.0 {
-            // Slightly longer for a readable logo transition.
             self.logo_switch_glitch_t = (self.logo_switch_glitch_t - dt / 0.38).max(0.0);
         }
         if self.logo_beat_glitch_t > 0.0 {
             self.logo_beat_glitch_t = (self.logo_beat_glitch_t - dt / 0.22).max(0.0);
         }
 
-        // Beat glitch — separate from switch transition.
         let beat = self.features.beat;
         let style = self.settings.logo_style(self.logo_index);
         let want_beat_glitch = self.settings.stage.logo_glitch_on_beat && style.glitch_on_beat;
         if want_beat_glitch
-            && !self.logos.is_empty()
+            && self.playlist_len() > 0
+            && !self.crt_phase.is_busy()
             && beat > 0.55
             && self.last_beat_for_glitch < 0.35
         {
@@ -477,12 +997,15 @@ impl LiveVisualizerApp {
         }
         self.last_beat_for_glitch = beat;
 
-        if self.logos.len() < 2 {
+        if self.crt_phase.is_busy() {
+            return;
+        }
+        if !self.settings.stage.logo_autoplay || self.playlist_len() < 2 {
             return;
         }
         self.logo_hold_left -= dt;
         if self.logo_hold_left <= 0.0 {
-            let next = (self.logo_index + 1) % self.logos.len();
+            let next = (self.logo_index + 1) % self.playlist_len();
             self.begin_logo_switch(next);
         }
     }
@@ -492,6 +1015,8 @@ impl LiveVisualizerApp {
             return;
         }
         self.shutting_down = true;
+        // Stop looping video decode before tearing down GPU / audio.
+        self.background = None;
         // Release audio device BEFORE tearing down GPU / egui (fixes "can't relaunch")
         self.capture.stop();
         self.settings.tuning = self.analyzer.tuning.clone();
@@ -505,28 +1030,27 @@ impl LiveVisualizerApp {
         log::info!("Shutdown complete — audio released");
     }
 
-    fn update_audio(&mut self) {
+    fn update_audio(&mut self, dt: f32) {
         if self.shutting_down {
             return;
         }
         let t0 = Instant::now();
+        let spec_cfg = self
+            .settings
+            .visualizer
+            .analysis_config(&self.analyzer.tuning);
         if let Some(samples) = self.capture.drain_samples() {
-            self.features = self.analyzer.process(&samples);
+            self.features = self.analyzer.process(&samples, dt, &spec_cfg);
             *self.features_shared.lock() = self.features.clone();
         } else {
-            self.features = self.analyzer.tick_idle();
+            self.features = self.analyzer.tick_idle(dt, &spec_cfg);
             *self.features_shared.lock() = self.features.clone();
         }
         self.timing.audio_ms = t0.elapsed().as_secs_f32() * 1000.0;
     }
 
-    fn update_timing(&mut self) {
+    fn update_timing(&mut self, dt: f32) {
         let now = Instant::now();
-        let dt = self
-            .last_frame
-            .elapsed()
-            .as_secs_f32()
-            .clamp(1.0 / 240.0, 1.0 / 20.0);
         self.timing.frame_ms = dt * 1000.0;
         self.last_frame = now;
         self.frame_count += 1;
@@ -537,8 +1061,14 @@ impl LiveVisualizerApp {
             self.fps_timer = now;
         }
 
+        self.usage.tick();
+        let usage = self.usage.snapshot();
+        self.timing.cpu_percent = usage.cpu_percent;
+        self.timing.gpu_percent = usage.gpu_percent;
+
         self.tick_logo_motion(dt);
         self.tick_logo_cycle(dt);
+        self.tick_banners(dt);
 
         if self.settings_dirty && self.save_timer.elapsed().as_secs_f32() > 1.0 {
             self.settings.tuning = self.analyzer.tuning.clone();
@@ -637,8 +1167,13 @@ impl eframe::App for LiveVisualizerApp {
         }
 
         self.handle_shortcuts(ctx);
-        self.update_audio();
-        self.update_timing();
+        let dt = self
+            .last_frame
+            .elapsed()
+            .as_secs_f32()
+            .clamp(1.0 / 240.0, 1.0 / 20.0);
+        self.update_audio(dt);
+        self.update_timing(dt);
         ctx.request_repaint();
 
         // Detached settings window — drag to the DJ laptop screen while

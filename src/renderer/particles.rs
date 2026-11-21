@@ -2,7 +2,7 @@
 //! Target ~500–2000 particles with audio-reactive motion.
 
 use crate::audio::AudioFeatures;
-use crate::config::ParticleSettings;
+use crate::config::{neon_rainbow, ColorMode, ParticleSettings, RgbColor};
 use egui::{Color32, Pos2, Shape};
 
 #[derive(Clone, Copy)]
@@ -22,6 +22,7 @@ pub struct ParticleSystem {
     settings: ParticleSettings,
     spawn_accum: f32,
     rng_state: u32,
+    time: f32,
 }
 
 impl Default for ParticleSystem {
@@ -38,6 +39,7 @@ impl ParticleSystem {
             settings,
             spawn_accum: 0.0,
             rng_state: 0xA341_316C,
+            time: 0.0,
         }
     }
 
@@ -111,6 +113,8 @@ impl ParticleSystem {
             return;
         }
 
+        self.time += dt;
+
         let bass_push = features.kick * self.settings.bass_reaction * 90.0;
         let high_spark = features.high * 0.8;
 
@@ -160,17 +164,13 @@ impl ParticleSystem {
         });
     }
 
-    pub fn draw(
-        &self,
-        painter: &egui::Painter,
-        color_mode: crate::config::ColorMode,
-        colors: &crate::config::ColorSettings,
-    ) {
+    pub fn draw(&self, painter: &egui::Painter) {
         if !self.settings.enabled {
             return;
         }
         let opacity = self.settings.opacity.clamp(0.05, 1.0) * 0.85;
         let glow = self.settings.glow.clamp(0.0, 1.0) * 0.45;
+        let cycle = self.time * self.settings.cycle_speed.clamp(0.0, 3.0);
 
         for p in &self.particles {
             let t = (p.life / p.max_life).clamp(0.0, 1.0);
@@ -178,7 +178,7 @@ impl ParticleSystem {
             if a < 8 {
                 continue;
             }
-            let color = particle_color(p.hue, t, a, color_mode, colors);
+            let color = particle_color(&self.settings, p.hue, t, a, cycle);
             let pos = Pos2::new(p.x, p.y);
             let r = (p.size * (0.45 + 0.4 * t)).clamp(0.6, 4.5);
 
@@ -197,13 +197,40 @@ impl ParticleSystem {
 }
 
 fn particle_color(
+    settings: &ParticleSettings,
     hue: f32,
     life_t: f32,
     alpha: u8,
-    mode: crate::config::ColorMode,
-    colors: &crate::config::ColorSettings,
+    cycle: f32,
 ) -> Color32 {
-    let rgb = colors.sample(mode, hue, 0.7 + 0.3 * life_t);
+    let boost = 0.7 + 0.3 * life_t;
+    let rgb = match settings.color_mode {
+        ColorMode::Solid | ColorMode::Cyan | ColorMode::Amber | ColorMode::Magenta | ColorMode::Mono => {
+            let c = match settings.color_mode {
+                ColorMode::Cyan => RgbColor::new(0.2, 0.82, 1.0),
+                ColorMode::Amber => RgbColor::new(1.0, 0.67, 0.22),
+                ColorMode::Magenta => RgbColor::new(1.0, 0.22, 0.75),
+                ColorMode::Mono => {
+                    let g = 0.7;
+                    RgbColor::new(g, g, g)
+                }
+                _ => settings.solid,
+            };
+            c.scale(boost)
+        }
+        ColorMode::Gradient | ColorMode::Bands => settings
+            .gradient_low
+            .lerp(settings.gradient_high, hue)
+            .scale(boost),
+        ColorMode::Rainbow => {
+            let (r, g, b) = neon_rainbow(hue);
+            RgbColor::new(r, g, b).scale(boost)
+        }
+        ColorMode::Cycle => {
+            let (r, g, b) = neon_rainbow((hue + cycle).fract());
+            RgbColor::new(r, g, b).scale(boost)
+        }
+    };
     Color32::from_rgba_unmultiplied(
         (rgb.r * 255.0) as u8,
         (rgb.g * 255.0) as u8,

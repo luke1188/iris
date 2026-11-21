@@ -24,63 +24,86 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: iris_visualizer-windows-x64
             binary: iris_visualizer.exe
+            kind: windows
           - name: macOS Apple Silicon
             os: macos-14
             target: aarch64-apple-darwin
             artifact: iris_visualizer-macos-aarch64
             binary: iris_visualizer
+            kind: macos
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
       - name: Build release
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Stage package
+      # Windows: just the exe (icon + presets are baked into the binary).
+      - name: Package Windows
+        if: matrix.kind == 'windows'
         shell: bash
         run: |
           set -euo pipefail
-          bin="target/${{ matrix.target }}/release/${{ matrix.binary }}"
-          if [ ! -f "$bin" ]; then
-            echo "Missing binary at $bin"
-            ls -la "target/${{ matrix.target }}/release/" || true
-            exit 1
-          fi
-          staging="dist/${{ matrix.artifact }}"
-          mkdir -p "$staging"
-          cp "$bin" "$staging/"
-          chmod +x "$staging/${{ matrix.binary }}" || true
-          cp -R presets "$staging/presets"
-          if [ -d assets ]; then
-            cp -R assets "$staging/assets"
-          fi
-          if [ -f README.md ]; then
-            cp README.md "$staging/"
-          fi
-          if [ -f docs/WINDOWS.md ]; then
-            mkdir -p "$staging/docs"
-            cp docs/WINDOWS.md "$staging/docs/"
-          fi
-          ls -la "$staging"
+          mkdir -p "dist/${{ matrix.artifact }}"
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
+            "dist/${{ matrix.artifact }}/"
+          ls -la "dist/${{ matrix.artifact }}"
 
-      # Upload the folder (not a pre-made .zip). Actions already wraps
-      # artifacts once — zipping first causes zip-in-zip downloads.
+      # macOS: .app only — Actions already zips folders for download.
+      # Release zips are created with ditto (plain zip marks .app as "damaged").
+      - name: Package macOS
+        if: matrix.kind == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/package-macos-app.sh
+          VERSION="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF" == refs/tags/* ]] || VERSION="0.1.0"
+          staging="dist/${{ matrix.artifact }}"
+          VERSION="$VERSION" ./scripts/package-macos-app.sh \
+            "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
+            "$staging"
+          test -x "$staging/Iris Visualizer.app/Contents/MacOS/iris_visualizer"
+          file "$staging/Iris Visualizer.app/Contents/MacOS/iris_visualizer"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}/
+          if-no-files-found: error
+
+      # Only for tagged releases — GitHub Releases need a single archive file.
+      - name: Zip for GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          if [[ "${{ matrix.kind }}" == "macos" ]]; then
+            ditto -c -k --keepParent \
+              "dist/${{ matrix.artifact }}/Iris Visualizer.app" \
+              "dist/release/${{ matrix.artifact }}.zip"
+          else
+            (cd dist && zip -r "release/${{ matrix.artifact }}.zip" "${{ matrix.artifact }}")
+          fi
+          ls -la dist/release
+
+      - name: Upload release zip
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-release
+          path: dist/release/${{ matrix.artifact }}.zip
           if-no-files-found: error
 
   release:
@@ -91,28 +114,23 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          pattern: '*-release'
+          path: release
+          merge-multiple: true
 
-      - name: Zip packages for release
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p release
-          for dir in artifacts/*; do
-            [ -d "$dir" ] || continue
-            name="$(basename "$dir")"
-            (cd "$dir" && zip -r "../../release/${name}.zip" .)
-          done
-          ls -la release
+      - run: ls -laR release
 
-      - name: Create release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           draft: false
           generate_release_notes: true
           files: release/*.zip
+          body: |
+            ## Downloads
+            - **Windows:** unzip → `iris_visualizer.exe`
+            - **macOS (Apple Silicon):** unzip → **`Iris Visualizer.app`**
+              - If macOS says damaged/untrusted: `xattr -cr "Iris Visualizer.app"` then right-click → Open
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

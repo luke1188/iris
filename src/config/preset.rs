@@ -19,6 +19,8 @@ pub enum ColorMode {
     Solid,
     /// Blend from low → high (see gradient colors).
     Gradient,
+    /// Rainbow that scrolls over time.
+    Cycle,
     /// Five frequency-band colors blended by position.
     Bands,
     Mono,
@@ -41,11 +43,85 @@ pub enum SpectrumStyle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SpectrumLayout {
-    /// Full circle, bass → highs.
+    /// Half the spectrum mirrored across the center. Bass sits at the seam.
+    /// Older presets used `continuous` / `full` for a one-way ring — those
+    /// aliases now load as mirrored (the milk-drop default).
     #[default]
-    Full,
-    /// Lows / mids / highs mirrored on the left and right (no bass on the ring).
+    #[serde(alias = "continuous", alias = "full")]
+    Mirrored,
+    /// Legacy Trap Nation bass-ear layout.
     Split,
+}
+
+/// Outer cap of each radial bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BarCap {
+    #[default]
+    Square,
+    Rounded,
+}
+
+/// Color style for the center oscilloscope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeColorMode {
+    #[default]
+    Solid,
+    /// Neon rainbow along the waveform.
+    Rainbow,
+    /// Blend `scope_color` → `scope_color_b`.
+    Gradient,
+    /// Rainbow that scrolls over time.
+    Cycle,
+}
+
+/// Playlist sentinel for a center oscilloscope slot (not a file path).
+pub const CENTER_SCOPE_ID: &str = ":scope:";
+/// Playlist sentinel for a mirrored condensed FFT slot.
+pub const CENTER_SPECTRUM_ID: &str = ":spectrum:";
+
+pub fn is_center_scope(path: &str) -> bool {
+    path == CENTER_SCOPE_ID
+}
+
+pub fn is_center_spectrum(path: &str) -> bool {
+    path == CENTER_SPECTRUM_ID
+}
+
+pub fn is_center_effect(path: &str) -> bool {
+    is_center_scope(path) || is_center_spectrum(path)
+}
+
+pub fn center_item_label(path: &str) -> String {
+    if is_center_scope(path) {
+        "Oscilloscope".into()
+    } else if is_center_spectrum(path) {
+        "Spectrum".into()
+    } else {
+        path.to_string()
+    }
+}
+
+/// How playlist items switch (logos, scope, spectrum).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LogoTransition {
+    /// Instant swap.
+    Cut,
+    /// RGB tear on image switches.
+    #[default]
+    Glitch,
+    /// TV turn-off: flatten → line → expand.
+    Crt,
+    /// Shrink + fade to black, then the next item fades in.
+    ShrinkFade,
+}
+
+impl LogoTransition {
+    pub fn uses_timeline(self) -> bool {
+        matches!(self, Self::Crt | Self::ShrinkFade)
+    }
 }
 
 /// Motion applied to the center logo / disc.
@@ -62,6 +138,187 @@ pub enum LogoMotion {
     Wobble,
     /// Slow pendulum swing.
     Pendulum,
+}
+
+/// Which stage corner a banner docks to (slides in from that corner).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BannerCorner {
+    #[serde(alias = "left", alias = "top")]
+    TopLeft,
+    #[default]
+    #[serde(alias = "right")]
+    TopRight,
+    #[serde(alias = "bottom")]
+    BottomLeft,
+    BottomRight,
+}
+
+/// Where the banner image sits relative to the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BannerImageFloat {
+    #[default]
+    Left,
+    Right,
+}
+
+/// One advertisement / promo card (QR, Venmo, socials, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BannerItem {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub subtitle: String,
+    /// Optional image (QR code, logo, etc.).
+    #[serde(default)]
+    pub image_path: Option<String>,
+    #[serde(default, alias = "edge")]
+    pub corner: BannerCorner,
+    /// Image on the left or right of the text.
+    #[serde(default)]
+    pub image_float: BannerImageFloat,
+    /// Image size relative to the card (1 = default).
+    #[serde(default = "default_banner_image_size")]
+    pub image_size: f32,
+    /// Card opacity (0..1).
+    #[serde(default = "default_banner_opacity")]
+    pub opacity: f32,
+    /// Card size as a fraction of the shorter stage axis.
+    #[serde(default = "default_banner_scale")]
+    pub scale: f32,
+    /// Extra nudge from the docked corner (−1…1 of stage size).
+    #[serde(default)]
+    pub offset_x: f32,
+    #[serde(default)]
+    pub offset_y: f32,
+    #[serde(default = "default_banner_bg")]
+    pub bg_color: RgbColor,
+    #[serde(default = "default_banner_title_color")]
+    pub title_color: RgbColor,
+    #[serde(default = "default_banner_subtitle_color")]
+    pub subtitle_color: RgbColor,
+    /// Title font scale (1 = default).
+    #[serde(default = "default_one_banner")]
+    pub title_size: f32,
+    /// Subtitle font scale (1 = default).
+    #[serde(default = "default_one_banner")]
+    pub subtitle_size: f32,
+    /// Inner padding scale (1 = default).
+    #[serde(default = "default_one_banner")]
+    pub padding: f32,
+    /// Corner radius in px-ish (scaled lightly with stage).
+    #[serde(default = "default_banner_radius")]
+    pub radius: f32,
+    #[serde(default = "default_true_banner")]
+    pub show_border: bool,
+    #[serde(default = "default_banner_border")]
+    pub border_color: RgbColor,
+    /// Soft drop shadow under the card.
+    #[serde(default = "default_true_banner")]
+    pub show_shadow: bool,
+}
+
+fn default_banner_image_size() -> f32 {
+    1.0
+}
+fn default_one_banner() -> f32 {
+    1.0
+}
+fn default_banner_radius() -> f32 {
+    10.0
+}
+fn default_true_banner() -> bool {
+    true
+}
+fn default_banner_bg() -> RgbColor {
+    RgbColor::new(0.05, 0.055, 0.08)
+}
+fn default_banner_title_color() -> RgbColor {
+    RgbColor::new(0.94, 0.97, 1.0)
+}
+fn default_banner_subtitle_color() -> RgbColor {
+    RgbColor::new(0.63, 0.75, 0.82)
+}
+fn default_banner_border() -> RgbColor {
+    RgbColor::new(0.47, 0.78, 1.0)
+}
+
+impl Default for BannerItem {
+    fn default() -> Self {
+        Self {
+            title: "Scan to connect".into(),
+            subtitle: "Follow / tip / RSVP".into(),
+            image_path: None,
+            corner: BannerCorner::TopRight,
+            image_float: BannerImageFloat::Left,
+            image_size: default_banner_image_size(),
+            opacity: default_banner_opacity(),
+            scale: default_banner_scale(),
+            offset_x: 0.0,
+            offset_y: 0.0,
+            bg_color: default_banner_bg(),
+            title_color: default_banner_title_color(),
+            subtitle_color: default_banner_subtitle_color(),
+            title_size: 1.0,
+            subtitle_size: 1.0,
+            padding: 1.0,
+            radius: default_banner_radius(),
+            show_border: true,
+            border_color: default_banner_border(),
+            show_shadow: true,
+        }
+    }
+}
+
+/// Session advertisement banners — not part of look presets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BannerSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    /// How long the banner stays fully on screen (seconds).
+    #[serde(default = "default_banner_hold")]
+    pub hold_secs: f32,
+    /// Time hidden between appearances. Ignored when `always_on`.
+    #[serde(default = "default_banner_gap")]
+    pub gap_secs: f32,
+    /// Stay visible (still slides between items if there are several).
+    #[serde(default)]
+    pub always_on: bool,
+    /// Slide in / out duration (seconds).
+    #[serde(default = "default_banner_slide")]
+    pub slide_secs: f32,
+    #[serde(default)]
+    pub items: Vec<BannerItem>,
+}
+
+fn default_banner_hold() -> f32 {
+    8.0
+}
+fn default_banner_gap() -> f32 {
+    20.0
+}
+fn default_banner_slide() -> f32 {
+    0.55
+}
+fn default_banner_opacity() -> f32 {
+    0.92
+}
+fn default_banner_scale() -> f32 {
+    0.22
+}
+
+impl Default for BannerSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hold_secs: default_banner_hold(),
+            gap_secs: default_banner_gap(),
+            always_on: false,
+            slide_secs: default_banner_slide(),
+            items: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +339,9 @@ pub struct AppSettings {
     /// Per-logo styles (parallel to `logo_paths`).
     #[serde(default)]
     pub logo_styles: Vec<LogoStyle>,
+    /// Event ads / QR / social banners (session media — not look presets).
+    #[serde(default)]
+    pub banners: BannerSettings,
     #[serde(default)]
     pub stage: StageSettings,
     #[serde(default)]
@@ -122,6 +382,15 @@ pub struct LogoStyle {
     /// Override hold time for this logo (0 = use playlist default).
     #[serde(default)]
     pub hold_secs: f32,
+    /// How this item enters when it becomes active.
+    #[serde(default)]
+    pub transition: LogoTransition,
+    /// How long this item takes to leave (Shrink & fade / CRT, seconds).
+    #[serde(default = "default_fade_out_secs")]
+    pub fade_out_secs: f32,
+    /// How long this item takes to appear (Shrink & fade / CRT, seconds).
+    #[serde(default = "default_fade_in_secs")]
+    pub fade_in_secs: f32,
     /// Fire a glitch burst when a kick/beat hits while this logo is up.
     #[serde(default = "default_true_stage")]
     pub glitch_on_beat: bool,
@@ -146,6 +415,9 @@ impl Default for LogoStyle {
             spin_speed: 0.15,
             motion_amount: 0.35,
             hold_secs: 0.0,
+            transition: LogoTransition::Glitch,
+            fade_out_secs: 0.40,
+            fade_in_secs: 0.55,
             glitch_on_beat: true,
         }
     }
@@ -166,6 +438,9 @@ impl LogoStyle {
             spin_speed: s.logo_spin_speed,
             motion_amount: s.logo_motion_amount,
             hold_secs: 0.0,
+            transition: s.logo_transition,
+            fade_out_secs: s.logo_fade_out_secs,
+            fade_in_secs: s.logo_fade_in_secs,
             glitch_on_beat: true,
         }
     }
@@ -175,6 +450,9 @@ impl LogoStyle {
 pub struct StageSettings {
     pub background_brightness: f32,
     pub background_darkness: f32,
+    /// Black wash over the background. Off keeps original image/video colors.
+    #[serde(default = "default_true_stage")]
+    pub background_overlay: bool,
     pub background_zoom: f32,
     pub background_pan_x: f32,
     pub background_pan_y: f32,
@@ -214,9 +492,49 @@ pub struct StageSettings {
     /// Center disc fill color (under the logo).
     #[serde(default = "default_disc_color")]
     pub disc_color: RgbColor,
+    #[serde(default = "default_scope_gain")]
+    pub scope_gain: f32,
+    #[serde(default = "default_scope_thickness")]
+    pub scope_thickness: f32,
+    #[serde(default)]
+    pub scope_color_mode: ScopeColorMode,
+    #[serde(default = "default_scope_color")]
+    pub scope_color: RgbColor,
+    #[serde(default = "default_scope_color_b")]
+    pub scope_color_b: RgbColor,
+    #[serde(default = "default_scope_cycle_speed")]
+    pub scope_cycle_speed: f32,
+    /// Separate look for the center spectrum bars.
+    #[serde(default = "default_scope_gain")]
+    pub spectrum_gain: f32,
+    #[serde(default = "default_scope_thickness")]
+    pub spectrum_thickness: f32,
+    #[serde(default)]
+    pub spectrum_color_mode: ScopeColorMode,
+    #[serde(default = "default_spectrum_color")]
+    pub spectrum_color: RgbColor,
+    #[serde(default = "default_spectrum_color_b")]
+    pub spectrum_color_b: RgbColor,
+    #[serde(default = "default_scope_cycle_speed")]
+    pub spectrum_cycle_speed: f32,
     /// Seconds each logo stays before cycling (multi-logo).
     #[serde(default = "default_logo_hold")]
     pub logo_hold_secs: f32,
+    /// When true, playlist advances on the hold timer.
+    #[serde(default = "default_true_stage")]
+    pub logo_autoplay: bool,
+    /// CRT-style flatten → line → center when switching to/from effects.
+    #[serde(default = "default_true_stage")]
+    pub crt_transition: bool,
+    /// Playlist switch animation used for newly added items.
+    #[serde(default)]
+    pub logo_transition: LogoTransition,
+    /// Default fade-out seconds for Shrink & fade / CRT on new items.
+    #[serde(default = "default_fade_out_secs")]
+    pub logo_fade_out_secs: f32,
+    /// Default fade-in seconds for Shrink & fade / CRT on new items.
+    #[serde(default = "default_fade_in_secs")]
+    pub logo_fade_in_secs: f32,
     /// Glitch burst when switching logos (transition).
     #[serde(default = "default_true_stage")]
     pub logo_glitch: bool,
@@ -245,6 +563,14 @@ fn default_logo_hold() -> f32 {
     8.0
 }
 
+fn default_fade_out_secs() -> f32 {
+    0.40
+}
+
+fn default_fade_in_secs() -> f32 {
+    0.55
+}
+
 fn default_true_stage() -> bool {
     true
 }
@@ -253,19 +579,48 @@ fn default_disc_color() -> RgbColor {
     RgbColor::new(4.0 / 255.0, 4.0 / 255.0, 6.0 / 255.0)
 }
 
+fn default_scope_gain() -> f32 {
+    1.15
+}
+
+fn default_scope_thickness() -> f32 {
+    2.0
+}
+
+fn default_scope_color() -> RgbColor {
+    RgbColor::new(0.25, 0.95, 1.0)
+}
+
+fn default_scope_color_b() -> RgbColor {
+    RgbColor::new(1.0, 0.3, 0.85)
+}
+
+fn default_spectrum_color() -> RgbColor {
+    RgbColor::new(0.35, 1.0, 0.55)
+}
+
+fn default_spectrum_color_b() -> RgbColor {
+    RgbColor::new(0.2, 0.75, 1.0)
+}
+
+fn default_scope_cycle_speed() -> f32 {
+    0.2
+}
+
 impl Default for StageSettings {
     fn default() -> Self {
         Self {
             background_brightness: 0.85,
             background_darkness: 0.45,
+            background_overlay: true,
             background_zoom: 1.05,
             background_pan_x: 0.0,
             background_pan_y: 0.0,
             logo_size: 0.72,
-            disc_radius: 0.14,
+            disc_radius: 0.145,
             logo_glow: 0.0,
-            bass_pulse: 0.1,
-            beat_pulse: 0.18,
+            bass_pulse: 0.10,
+            beat_pulse: 0.22,
             logo_offset_x: 0.0,
             logo_offset_y: 0.0,
             logo_tint_r: 1.0,
@@ -278,7 +633,24 @@ impl Default for StageSettings {
             logo_motion_amount: 0.35,
             disc_ticks: false,
             disc_color: default_disc_color(),
+            scope_gain: 1.15,
+            scope_thickness: 2.0,
+            scope_color_mode: ScopeColorMode::Solid,
+            scope_color: default_scope_color(),
+            scope_color_b: default_scope_color_b(),
+            scope_cycle_speed: 0.2,
+            spectrum_gain: 1.15,
+            spectrum_thickness: 2.2,
+            spectrum_color_mode: ScopeColorMode::Solid,
+            spectrum_color: default_spectrum_color(),
+            spectrum_color_b: default_spectrum_color_b(),
+            spectrum_cycle_speed: 0.15,
             logo_hold_secs: 8.0,
+            logo_autoplay: true,
+            crt_transition: true,
+            logo_transition: LogoTransition::Glitch,
+            logo_fade_out_secs: 0.40,
+            logo_fade_in_secs: 0.55,
             logo_glitch: true,
             logo_glitch_amount: 1.0,
             logo_glitch_on_beat: true,
@@ -291,13 +663,14 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             last_audio_device: None,
-            last_preset: Some("rgb".into()),
+            last_preset: Some("default".into()),
             show_debug: true,
             tuning: BandTuning::default(),
             background_path: None,
             logo_path: None,
             logo_paths: Vec::new(),
             logo_styles: Vec::new(),
+            banners: BannerSettings::default(),
             stage: StageSettings::default(),
             visualizer: VisualizerSettings::default(),
             particles: ParticleSettings::default(),
@@ -387,6 +760,66 @@ pub struct VisualizerSettings {
     /// How tall the mirrored bass “ear” spikes are in Split layout.
     #[serde(default = "default_ear_gain")]
     pub ear_gain: f32,
+    /// Number of bass ear lobes per side half → total 2 or 4 around the ring.
+    #[serde(default = "default_ear_count")]
+    pub ear_count: u8,
+    /// Where ears sit along each half (0 = top / 12 o'clock, 1 = bottom).
+    #[serde(default = "default_ear_angle")]
+    pub ear_angle: f32,
+    /// Angular width of each ear lobe.
+    #[serde(default = "default_ear_width")]
+    pub ear_width: f32,
+    /// Extra radial lift for ear spikes (0 = flush with ring base).
+    #[serde(default)]
+    pub ear_radius: f32,
+    /// Outer rim stroke width.
+    #[serde(default = "default_outline_width")]
+    pub outline_width: f32,
+    /// Extra spatial blur on the outer outline (0..1).
+    #[serde(default = "default_outline_smooth")]
+    pub outline_smooth: f32,
+    /// Scroll speed when `color_mode` is Cycle.
+    #[serde(default = "default_cycle_speed")]
+    pub cycle_speed: f32,
+    #[serde(default = "default_min_frequency")]
+    pub min_frequency: f32,
+    #[serde(default = "default_max_frequency")]
+    pub max_frequency: f32,
+    #[serde(default = "default_attack_ms")]
+    pub attack_ms: f32,
+    #[serde(default = "default_release_ms")]
+    pub release_ms: f32,
+    #[serde(default = "default_noise_floor_db")]
+    pub noise_floor_db: f32,
+    #[serde(default = "default_ceiling_db")]
+    pub ceiling_db: f32,
+    #[serde(default = "default_response_exponent")]
+    pub response_exponent: f32,
+    #[serde(default = "default_frequency_smoothing")]
+    pub frequency_smoothing: f32,
+    #[serde(default = "default_transient_scale")]
+    pub transient_scale: f32,
+    /// Turns from 12 o'clock (0.5 = bass at the bottom in Mirrored mode).
+    #[serde(default = "default_rotation_offset")]
+    pub rotation_offset: f32,
+    #[serde(default)]
+    pub reverse_spectrum: bool,
+    /// Fraction of each angular slot filled by a bar (rest is the gap).
+    #[serde(default = "default_bar_fill")]
+    pub bar_fill: f32,
+    /// Resting bar height as a fraction of the shorter viewport axis.
+    #[serde(default = "default_min_bar_height")]
+    pub min_bar_height: f32,
+    #[serde(default)]
+    pub show_base_ring: bool,
+    #[serde(default = "default_base_ring_width")]
+    pub base_ring_width: f32,
+    #[serde(default = "default_base_ring_brightness")]
+    pub base_ring_brightness: f32,
+    #[serde(default)]
+    pub bar_cap: BarCap,
+    #[serde(default)]
+    pub show_peak_caps: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -404,6 +837,17 @@ pub struct ParticleSettings {
     pub spread: f32,
     #[serde(default)]
     pub glow: f32,
+    /// Independent from the spectrum ring.
+    #[serde(default)]
+    pub color_mode: ColorMode,
+    #[serde(default = "default_particle_solid")]
+    pub solid: RgbColor,
+    #[serde(default = "default_particle_gradient_low")]
+    pub gradient_low: RgbColor,
+    #[serde(default = "default_particle_gradient_high")]
+    pub gradient_high: RgbColor,
+    #[serde(default = "default_cycle_speed")]
+    pub cycle_speed: f32,
 }
 
 fn default_true() -> bool {
@@ -412,6 +856,75 @@ fn default_true() -> bool {
 
 fn default_ear_gain() -> f32 {
     1.45
+}
+fn default_ear_count() -> u8 {
+    2
+}
+fn default_ear_angle() -> f32 {
+    0.20
+}
+fn default_ear_width() -> f32 {
+    0.075
+}
+fn default_outline_width() -> f32 {
+    1.45
+}
+fn default_outline_smooth() -> f32 {
+    0.45
+}
+fn default_cycle_speed() -> f32 {
+    0.18
+}
+fn default_min_frequency() -> f32 {
+    30.0
+}
+fn default_max_frequency() -> f32 {
+    16_000.0
+}
+fn default_attack_ms() -> f32 {
+    28.0
+}
+fn default_release_ms() -> f32 {
+    210.0
+}
+fn default_noise_floor_db() -> f32 {
+    -66.0
+}
+fn default_ceiling_db() -> f32 {
+    -14.0
+}
+fn default_response_exponent() -> f32 {
+    1.7
+}
+fn default_frequency_smoothing() -> f32 {
+    0.34
+}
+fn default_transient_scale() -> f32 {
+    0.12
+}
+fn default_rotation_offset() -> f32 {
+    0.5
+}
+fn default_bar_fill() -> f32 {
+    0.74
+}
+fn default_min_bar_height() -> f32 {
+    0.008
+}
+fn default_base_ring_width() -> f32 {
+    1.15
+}
+fn default_base_ring_brightness() -> f32 {
+    0.16
+}
+fn default_particle_solid() -> RgbColor {
+    RgbColor::new(0.35, 0.85, 1.0)
+}
+fn default_particle_gradient_low() -> RgbColor {
+    RgbColor::new(1.0, 0.35, 0.55)
+}
+fn default_particle_gradient_high() -> RgbColor {
+    RgbColor::new(0.25, 0.9, 1.0)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -505,28 +1018,28 @@ pub struct ColorSettings {
 }
 
 fn default_solid_color() -> RgbColor {
-    RgbColor::new(0.15, 0.85, 1.0)
+    RgbColor::new(0.18, 0.95, 1.0)
 }
 fn default_gradient_low() -> RgbColor {
-    RgbColor::new(1.0, 0.2, 0.45)
+    RgbColor::new(0.18, 0.95, 1.0)
 }
 fn default_gradient_high() -> RgbColor {
-    RgbColor::new(0.2, 0.85, 1.0)
+    RgbColor::new(1.0, 0.32, 0.72)
 }
 fn default_band_bass() -> RgbColor {
-    RgbColor::new(1.0, 0.2, 0.35)
+    RgbColor::new(0.18, 0.95, 1.0)
 }
 fn default_band_low_mid() -> RgbColor {
-    RgbColor::new(1.0, 0.55, 0.15)
+    RgbColor::new(0.22, 0.50, 1.0)
 }
 fn default_band_mid() -> RgbColor {
-    RgbColor::new(1.0, 0.9, 0.2)
+    RgbColor::new(0.62, 0.22, 1.0)
 }
 fn default_band_high_mid() -> RgbColor {
-    RgbColor::new(0.25, 0.95, 0.45)
+    RgbColor::new(0.98, 0.16, 0.90)
 }
 fn default_band_high() -> RgbColor {
-    RgbColor::new(0.25, 0.65, 1.0)
+    RgbColor::new(1.0, 0.40, 0.62)
 }
 
 impl Default for VisualizerSettings {
@@ -534,19 +1047,65 @@ impl Default for VisualizerSettings {
         Self {
             style: SpectrumStyle::Bars,
             color_mode: ColorMode::Rainbow,
-            layout: SpectrumLayout::Full,
+            layout: SpectrumLayout::Mirrored,
             radius: 0.22,
             thickness: 2.0,
-            sensitivity: 1.4,
-            smoothing: 0.28,
-            bass_response: 1.2,
-            mid_response: 1.0,
-            high_response: 0.9,
-            max_bar_length: 0.55,
-            glow: 0.5,
-            segment_count: 256,
+            sensitivity: 1.25,
+            smoothing: 0.40,
+            bass_response: 0.95,
+            mid_response: 1.12,
+            high_response: 0.88,
+            max_bar_length: 0.36,
+            glow: 0.48,
+            segment_count: 192,
             ear_gain: 1.45,
+            ear_count: 2,
+            ear_angle: 0.20,
+            ear_width: 0.075,
+            ear_radius: 0.06,
+            outline_width: 1.40,
+            outline_smooth: 0.40,
+            cycle_speed: 0.15,
+            min_frequency: 30.0,
+            max_frequency: 16_000.0,
+            attack_ms: 28.0,
+            release_ms: 210.0,
+            noise_floor_db: -66.0,
+            ceiling_db: -14.0,
+            response_exponent: 1.7,
+            frequency_smoothing: 0.34,
+            transient_scale: 0.12,
+            rotation_offset: 0.5,
+            reverse_spectrum: false,
+            bar_fill: 0.74,
+            min_bar_height: 0.008,
+            show_base_ring: false,
+            base_ring_width: 1.15,
+            base_ring_brightness: 0.16,
+            bar_cap: BarCap::Square,
+            show_peak_caps: false,
         }
+    }
+}
+
+impl VisualizerSettings {
+    pub fn analysis_config(&self, tuning: &BandTuning) -> crate::audio::SpectrumAnalysisConfig {
+        crate::audio::SpectrumAnalysisConfig::from_visualizer(
+            self.segment_count,
+            self.min_frequency,
+            self.max_frequency,
+            self.attack_ms,
+            self.release_ms,
+            self.noise_floor_db,
+            self.ceiling_db,
+            self.response_exponent,
+            self.frequency_smoothing,
+            self.bass_response,
+            self.mid_response,
+            self.high_response,
+            self.transient_scale,
+            self.sensitivity * tuning.sensitivity,
+        )
     }
 }
 
@@ -564,6 +1123,11 @@ impl Default for ParticleSettings {
             beat_reaction: 1.2,
             spread: 0.8,
             glow: 0.4,
+            color_mode: ColorMode::Rainbow,
+            solid: default_particle_solid(),
+            gradient_low: default_particle_gradient_low(),
+            gradient_high: default_particle_gradient_high(),
+            cycle_speed: 0.18,
         }
     }
 }
@@ -571,10 +1135,10 @@ impl Default for ParticleSettings {
 impl Default for BeatSettings {
     fn default() -> Self {
         Self {
-            sensitivity: 0.85,
-            cooldown: 0.22,
-            kick_sensitivity: 1.0,
-            mode: BeatMode::KickOnly,
+            sensitivity: 1.0,
+            cooldown: 0.18,
+            kick_sensitivity: 1.05,
+            mode: BeatMode::BassKick,
             bass_weight: 1.0,
             rms_weight: 0.0,
         }
@@ -585,7 +1149,7 @@ impl BeatSettings {
     pub fn preset_bass_only() -> Self {
         Self {
             sensitivity: 1.05,
-            cooldown: 0.18,
+            cooldown: 0.17,
             kick_sensitivity: 1.05,
             mode: BeatMode::BassKick,
             bass_weight: 1.0,
@@ -595,9 +1159,9 @@ impl BeatSettings {
 
     pub fn preset_kick_only() -> Self {
         Self {
-            sensitivity: 0.85,
-            cooldown: 0.22,
-            kick_sensitivity: 1.1,
+            sensitivity: 0.9,
+            cooldown: 0.2,
+            kick_sensitivity: 1.15,
             mode: BeatMode::KickOnly,
             bass_weight: 1.0,
             rms_weight: 0.0,
@@ -607,19 +1171,19 @@ impl BeatSettings {
     pub fn preset_bass_level() -> Self {
         Self {
             sensitivity: 1.15,
-            cooldown: 0.16,
-            kick_sensitivity: 0.9,
+            cooldown: 0.15,
+            kick_sensitivity: 0.95,
             mode: BeatMode::BassLevel,
-            bass_weight: 1.1,
+            bass_weight: 1.15,
             rms_weight: 0.0,
         }
     }
 
     pub fn preset_sensitive() -> Self {
         Self {
-            sensitivity: 1.35,
-            cooldown: 0.16,
-            kick_sensitivity: 1.2,
+            sensitivity: 1.4,
+            cooldown: 0.14,
+            kick_sensitivity: 1.25,
             mode: BeatMode::BassKick,
             bass_weight: 1.0,
             rms_weight: 0.0,
@@ -628,9 +1192,9 @@ impl BeatSettings {
 
     pub fn preset_tight() -> Self {
         Self {
-            sensitivity: 0.75,
-            cooldown: 0.26,
-            kick_sensitivity: 1.0,
+            sensitivity: 0.78,
+            cooldown: 0.24,
+            kick_sensitivity: 1.05,
             mode: BeatMode::KickOnly,
             bass_weight: 1.0,
             rms_weight: 0.0,
@@ -641,8 +1205,8 @@ impl BeatSettings {
 impl Default for ColorSettings {
     fn default() -> Self {
         Self {
-            rgb_intensity: 1.0,
-            glow_intensity: 0.6,
+            rgb_intensity: 1.08,
+            glow_intensity: 0.5,
             solid: default_solid_color(),
             gradient_low: default_gradient_low(),
             gradient_high: default_gradient_high(),
@@ -658,11 +1222,26 @@ impl Default for ColorSettings {
 impl ColorSettings {
     /// Sample a color for spectrum/FFT position `t` in 0..1 (bass → high).
     pub fn sample(&self, mode: ColorMode, t: f32, intensity: f32) -> RgbColor {
+        self.sample_cycled(mode, t, intensity, 0.0)
+    }
+
+    /// Like [`sample`](Self::sample), with a time offset for `ColorMode::Cycle`.
+    pub fn sample_cycled(
+        &self,
+        mode: ColorMode,
+        t: f32,
+        intensity: f32,
+        cycle: f32,
+    ) -> RgbColor {
         let boost = (intensity * self.rgb_intensity).clamp(0.35, 1.35);
-        let t = t.fract();
+        let t = t.rem_euclid(1.0);
         match mode {
             ColorMode::Rainbow => {
-                let (r, g, b) = neon_rainbow(t);
+                let (r, g, b) = neon_ring_gradient(t);
+                RgbColor::new(r, g, b).scale(boost.min(1.0))
+            }
+            ColorMode::Cycle => {
+                let (r, g, b) = neon_ring_gradient((t + cycle).rem_euclid(1.0));
                 RgbColor::new(r, g, b).scale(boost.min(1.0))
             }
             ColorMode::Solid => self.solid.scale(boost.min(1.0)),
@@ -698,7 +1277,7 @@ impl ColorSettings {
                 } else {
                     ((t - t0) / (t1 - t0)).clamp(0.0, 1.0)
                 };
-                let u = (1.0 - (u * std::f32::consts::PI).cos()) * 0.5;
+                let u = u * u * (3.0 - 2.0 * u);
                 return c0.lerp(c1, u);
             }
         }
@@ -706,7 +1285,46 @@ impl ColorSettings {
     }
 }
 
-/// Neon rainbow stops shared by spectrum / FFT.
+/// Frequency neon: cyan → electric blue → violet → magenta → pink.
+/// `t` is 0 at bass and 1 at highs (does not wrap back to cyan).
+pub fn neon_ring_gradient(t: f32) -> (f32, f32, f32) {
+    const STOPS: [(f32, f32, f32, f32); 5] = [
+        (0.00, 0.18, 0.98, 1.00),
+        (0.24, 0.20, 0.50, 1.00),
+        (0.48, 0.62, 0.22, 1.00),
+        (0.74, 0.98, 0.16, 0.90),
+        (1.00, 1.00, 0.40, 0.62),
+    ];
+    sample_positioned_stops(t, &STOPS)
+}
+
+fn sample_positioned_stops(t: f32, stops: &[(f32, f32, f32, f32)]) -> (f32, f32, f32) {
+    let t = t.clamp(0.0, 1.0);
+    if stops.is_empty() {
+        return (1.0, 1.0, 1.0);
+    }
+    if t <= stops[0].0 {
+        return (stops[0].1, stops[0].2, stops[0].3);
+    }
+    for w in stops.windows(2) {
+        let a = w[0];
+        let b = w[1];
+        if t <= b.0 {
+            let span = (b.0 - a.0).max(1e-5);
+            let mut u = ((t - a.0) / span).clamp(0.0, 1.0);
+            u = u * u * (3.0 - 2.0 * u);
+            return (
+                a.1 + (b.1 - a.1) * u,
+                a.2 + (b.2 - a.2) * u,
+                a.3 + (b.3 - a.3) * u,
+            );
+        }
+    }
+    let last = stops[stops.len() - 1];
+    (last.1, last.2, last.3)
+}
+
+/// Neon rainbow stops shared by particles / FFT extras.
 pub fn neon_rainbow(t: f32) -> (f32, f32, f32) {
     const STOPS: [(f32, f32, f32); 6] = [
         (1.00, 0.20, 0.35),
@@ -752,23 +1370,6 @@ pub fn settings_path() -> PathBuf {
         .join("settings.toml")
 }
 
-/// Factory / bundled presets (repo USB copy or next to the exe).
-pub fn bundled_presets_dir() -> PathBuf {
-    let local = PathBuf::from("presets");
-    if local.is_dir() {
-        return local;
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let beside = parent.join("presets");
-            if beside.is_dir() {
-                return beside;
-            }
-        }
-    }
-    local
-}
-
 /// User-writable presets — always under the app config dir (reliable regardless of cwd).
 pub fn user_presets_dir() -> PathBuf {
     dirs::config_dir()
@@ -782,7 +1383,85 @@ pub fn presets_dir() -> PathBuf {
     user_presets_dir()
 }
 
-/// Safe file stem for a preset name (spaces → `_`, strip unsafe chars).
+/// Read-only starter templates (compiled into the binary from `presets/*.toml`).
+pub const TEMPLATE_NAMES: &[&str] = &["default", "smooth", "neon", "particles"];
+
+/// Built-in factory / Default template name.
+pub const FACTORY_PRESET_NAME: &str = "default";
+
+fn builtin_preset_toml(name: &str) -> Option<&'static str> {
+    match name {
+        "default" => Some(include_str!("../../presets/default.toml")),
+        "smooth" => Some(include_str!("../../presets/smooth.toml")),
+        "neon" => Some(include_str!("../../presets/neon.toml")),
+        "particles" => Some(include_str!("../../presets/particles.toml")),
+        _ => None,
+    }
+}
+
+/// True for any starter template — cannot be overwritten by user saves.
+pub fn is_locked_preset(name: &str) -> bool {
+    is_template(name)
+}
+
+pub fn is_template(name: &str) -> bool {
+    let safe = sanitize_preset_name(name);
+    TEMPLATE_NAMES
+        .iter()
+        .any(|t| safe.eq_ignore_ascii_case(t))
+}
+
+/// Display label for a template id (`default` → `Default`).
+pub fn template_label(name: &str) -> &'static str {
+    match sanitize_preset_name(name).to_ascii_lowercase().as_str() {
+        "default" => "Default",
+        "smooth" => "Smooth",
+        "neon" => "Neon",
+        "particles" => "Particles",
+        _ => "Starter",
+    }
+}
+
+/// Starter templates in UI order.
+pub fn list_templates() -> Vec<String> {
+    TEMPLATE_NAMES.iter().map(|s| (*s).to_string()).collect()
+}
+
+/// User-saved presets only (never includes starter template names).
+pub fn list_user_presets() -> Vec<String> {
+    let mut names = Vec::new();
+    collect_preset_names(&user_presets_dir(), &mut names);
+    names.retain(|n| !is_template(n));
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Alias for [`list_user_presets`] — the picker “Yours” list.
+pub fn list_presets() -> Vec<String> {
+    list_user_presets()
+}
+
+/// Recommended Default look + tuning. Source of truth is the Rust `Default` impls.
+pub fn factory_preset() -> Preset {
+    Preset::default()
+}
+
+/// Load a starter template by id. Templates never come from the user folder.
+pub fn load_template(name: &str) -> Result<Preset> {
+    let safe = sanitize_preset_name(name);
+    if !is_template(&safe) {
+        anyhow::bail!("'{safe}' is not a starter template");
+    }
+    if safe.eq_ignore_ascii_case(FACTORY_PRESET_NAME) {
+        return Ok(factory_preset());
+    }
+    let text = builtin_preset_toml(&safe.to_ascii_lowercase())
+        .ok_or_else(|| anyhow::anyhow!("Missing template '{safe}'"))?;
+    let mut preset: Preset = toml::from_str(text).context("Parsing template")?;
+    preset.name = safe.to_ascii_lowercase();
+    Ok(preset)
+}
 pub fn sanitize_preset_name(name: &str) -> String {
     let trimmed = name.trim();
     let mut out = String::with_capacity(trimmed.len());
@@ -851,40 +1530,34 @@ pub fn save_settings(settings: &AppSettings) -> Result<()> {
     Ok(())
 }
 
-pub fn list_presets() -> Vec<String> {
-    let mut names = Vec::new();
-    // User presets first so they win on name collisions in the list order sense;
-    // load_preset also prefers user.
-    collect_preset_names(&user_presets_dir(), &mut names);
-    collect_preset_names(&bundled_presets_dir(), &mut names);
-    names.sort();
-    names
-}
-
-fn preset_path(name: &str) -> PathBuf {
-    let file = format!("{name}.toml");
-    let user = user_presets_dir().join(&file);
-    if user.exists() {
-        return user;
-    }
-    bundled_presets_dir().join(file)
-}
-
 pub fn load_preset(name: &str) -> Result<Preset> {
-    let path = preset_path(name);
-    let text = fs::read_to_string(&path).with_context(|| format!("Reading {path:?}"))?;
+    let safe = sanitize_preset_name(name);
+    if is_template(&safe) {
+        return load_template(&safe);
+    }
+    let user_path = user_presets_dir().join(format!("{safe}.toml"));
+    if !user_path.exists() {
+        anyhow::bail!("Unknown preset '{safe}'");
+    }
+    let text =
+        fs::read_to_string(&user_path).with_context(|| format!("Reading {user_path:?}"))?;
     let mut preset: Preset = toml::from_str(&text).context("Parsing preset")?;
     if preset.name.is_empty() {
-        preset.name = name.to_string();
+        preset.name = safe;
     }
     Ok(preset)
 }
 
 pub fn save_preset(preset: &Preset) -> Result<PathBuf> {
+    let safe = sanitize_preset_name(&preset.name);
+    if is_template(&safe) {
+        anyhow::bail!(
+            "'{safe}' is a starter template and cannot be overwritten — save as a new name"
+        );
+    }
     let dir = user_presets_dir();
     fs::create_dir_all(&dir)
         .with_context(|| format!("Creating presets folder {dir:?}"))?;
-    let safe = sanitize_preset_name(&preset.name);
     let path = dir.join(format!("{safe}.toml"));
     let mut to_write = preset.clone();
     to_write.name = safe;

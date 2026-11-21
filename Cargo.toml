@@ -25,12 +25,16 @@ dirs = "5.0"
 image = "0.25"
 rfd = "0.15"
 resvg = "0.45"
+mp4 = "0.14"
+openh264 = "0.9"
+sysinfo = "0.33"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Media_Audio",
     "Win32_System_Com",
+    "Win32_System_Performance",
 ] }
 
 [profile.release]

@@ -4,15 +4,43 @@
 //! Large images are downscaled to fit the GPU / egui max texture side
 //! (commonly 2048–8192) so a 4K logo cannot panic the app at launch.
 
-
 use anyhow::{bail, Context, Result};
 use egui::{ColorImage, TextureHandle, TextureOptions};
 use image::imageops::FilterType;
 use image::{DynamicImage, RgbaImage};
 use std::path::{Path, PathBuf};
 
+use super::video::VideoBackground;
+
 /// Stay under common Metal/egui limits with a little headroom.
-const SAFE_MAX_SIDE: u32 = 2048;
+pub(crate) const SAFE_MAX_SIDE: u32 = 2048;
+
+pub enum StageBackground {
+    Image(LoadedTexture),
+    Video(VideoBackground),
+}
+
+impl StageBackground {
+    pub fn size(&self) -> [usize; 2] {
+        match self {
+            Self::Image(img) => img.size,
+            Self::Video(vid) => vid.size(),
+        }
+    }
+
+    pub fn texture(&self) -> &TextureHandle {
+        match self {
+            Self::Image(img) => &img.texture,
+            Self::Video(vid) => vid.texture(),
+        }
+    }
+
+    pub fn sync(&mut self) {
+        if let Self::Video(vid) = self {
+            vid.sync();
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct LoadedTexture {

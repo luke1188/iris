@@ -16,11 +16,14 @@ macOS / Linux can build for development; WASAPI loopback notes below apply to Wi
 cargo run --release
 ```
 
-CI builds **Windows x64** and **macOS Apple Silicon** packages on `main` / PRs (download from the Actions run). Push a `v*` tag to attach real `.zip` files to a GitHub Release.
+CI builds **Windows x64** and **macOS Apple Silicon** on `main` / PRs (Actions artifacts). Tag `v*` for a GitHub Release.
+
+- **Windows:** `iris_visualizer.exe`
+- **macOS:** `Iris Visualizer.app` — if Gatekeeper says damaged: `xattr -cr "Iris Visualizer.app"`, then right-click → Open
 
 ### Presets
 
-In the **PRESETS** panel (or `presets/` folder):
+Built-in presets ship inside the binary. Your saves go to the app config `presets/` folder.
 
 | Preset | Look |
 |--------|------|
