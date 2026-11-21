@@ -57,10 +57,10 @@ color_mode = "rainbow"
 cycle_speed = 0.18
 
 [beat]
-sensitivity = 0.85
-cooldown = 0.22
-kick_sensitivity = 1.0
-mode = "kick_only"
+sensitivity = 1.0
+cooldown = 0.18
+kick_sensitivity = 1.05
+mode = "bass_kick"
 bass_weight = 1.0
 rms_weight = 0.0
 
@@ -91,5 +91,5 @@ background_pan_y = 0.0
 logo_size = 0.72
 disc_radius = 0.145
 logo_glow = 0.0
-bass_pulse = 0.08
-beat_pulse = 0.14
+bass_pulse = 0.10
+beat_pulse = 0.22

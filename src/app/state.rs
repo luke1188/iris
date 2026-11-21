@@ -2,7 +2,8 @@
 
 use crate::audio::{AudioCapture, AudioDeviceInfo, AudioFeatures, Analyzer};
 use crate::config::{
-    list_presets, load_preset, load_settings, sanitize_preset_name, save_preset, save_settings,
+    list_user_presets, load_preset, load_settings, load_template, sanitize_preset_name,
+    save_preset, save_settings,
     AppSettings, LogoMotion, LogoStyle, LogoTransition, StageSettings,
 };
 use crate::display::{is_fullscreen, toggle_fullscreen};
@@ -214,11 +215,13 @@ impl LiveVisualizerApp {
         analyzer.beat_mut().apply_settings(&settings.beat);
 
         let particles = ParticleSystem::new(settings.particles.clone());
-        let preset_names = list_presets();
+        let preset_names = list_user_presets();
         let preset_save_name = settings
             .last_preset
-            .clone()
-            .unwrap_or_else(|| "custom".into());
+            .as_deref()
+            .filter(|n| !crate::config::is_template(n))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "my_look".into());
 
         let mut app = Self {
             settings,
@@ -346,35 +349,61 @@ impl LiveVisualizerApp {
         self.pending_preset_load = None;
     }
 
+    /// Apply a starter template or a user preset. Dirty working look needs a second click to discard.
     pub fn apply_preset_by_name(&mut self, name: &str) {
-        if crate::config::is_locked_preset(name) {
-            self.reset_to_factory();
-            return;
-        }
+        let safe = sanitize_preset_name(name);
         if self.preset_dirty {
-            if self.pending_preset_load.as_deref() != Some(name) {
-                self.pending_preset_load = Some(name.to_string());
+            if self.pending_preset_load.as_deref() != Some(safe.as_str()) {
+                self.pending_preset_load = Some(safe.clone());
+                let hint = if crate::config::is_template(&safe) {
+                    crate::config::template_label(&safe)
+                } else {
+                    safe.as_str()
+                };
                 self.status_message = Some(format!(
-                    "Unsaved preset edits — Save first, or click '{name}' again to discard"
+                    "Unsaved changes — Save as…, or click '{hint}' again to discard"
                 ));
                 return;
             }
         }
         self.pending_preset_load = None;
 
-        match load_preset(name) {
+        if crate::config::is_template(&safe) {
+            self.apply_loaded_preset(load_template(&safe), &safe, true);
+        } else {
+            self.apply_loaded_preset(load_preset(&safe), &safe, false);
+        }
+    }
+
+    fn apply_loaded_preset(
+        &mut self,
+        result: anyhow::Result<crate::config::Preset>,
+        name: &str,
+        is_template: bool,
+    ) {
+        match result {
             Ok(preset) => {
                 self.settings.apply_preset(&preset);
+                self.settings.last_preset = Some(name.to_string());
                 self.analyzer.set_tuning(self.settings.tuning.clone());
                 self.analyzer.beat_mut().apply_settings(&self.settings.beat);
                 self.particles.set_settings(self.settings.particles.clone());
-                self.preset_save_name = name.to_string();
+                if !is_template {
+                    self.preset_save_name = name.to_string();
+                }
                 self.preset_dirty = false;
-                // Persist session (which preset is active) without marking the preset dirty.
+                // Persist session (active look) — not a named preset save.
                 self.settings_dirty = true;
                 self.error_message = None;
-                self.status_message = Some(format!("Loaded preset '{name}'"));
-                log::info!("Loaded preset '{name}'");
+                self.status_message = Some(if is_template {
+                    format!(
+                        "Applied starter {} — tweak, then Save as…",
+                        crate::config::template_label(name)
+                    )
+                } else {
+                    format!("Loaded '{name}'")
+                });
+                log::info!("Loaded preset '{name}' (template={is_template})");
             }
             Err(e) => {
                 self.status_message = None;
@@ -384,30 +413,24 @@ impl LiveVisualizerApp {
     }
 
     pub fn reset_to_factory(&mut self) {
-        let preset = crate::config::factory_preset();
-        self.settings.apply_preset(&preset);
-        self.analyzer.set_tuning(self.settings.tuning.clone());
-        self.analyzer.beat_mut().apply_settings(&self.settings.beat);
-        self.particles.set_settings(self.settings.particles.clone());
-        self.preset_save_name = crate::config::FACTORY_PRESET_NAME.to_string();
-        self.preset_dirty = false;
         self.pending_preset_load = None;
-        self.settings_dirty = true;
-        self.error_message = None;
-        self.status_message = Some("Reset to factory default".into());
-        log::info!("Reset to factory default");
+        self.apply_loaded_preset(
+            load_template(crate::config::FACTORY_PRESET_NAME),
+            crate::config::FACTORY_PRESET_NAME,
+            true,
+        );
     }
 
     pub fn save_current_preset(&mut self) {
         let name = sanitize_preset_name(&self.preset_save_name);
         self.preset_save_name = name.clone();
         if name.is_empty() {
-            self.error_message = Some("Enter a preset name before saving".into());
+            self.error_message = Some("Enter a name before saving".into());
             return;
         }
-        if crate::config::is_locked_preset(&name) {
+        if crate::config::is_template(&name) {
             self.error_message = Some(
-                "The default preset is built-in and cannot be overwritten — save as a new name"
+                "Starter templates cannot be overwritten — choose a new name under Save as…"
                     .into(),
             );
             return;
@@ -416,12 +439,12 @@ impl LiveVisualizerApp {
         match save_preset(&preset) {
             Ok(path) => {
                 self.settings.last_preset = Some(name.clone());
-                self.preset_names = list_presets();
+                self.preset_names = list_user_presets();
                 self.preset_dirty = false;
                 self.pending_preset_load = None;
                 self.settings_dirty = true;
                 self.error_message = None;
-                self.status_message = Some(format!("Saved preset '{name}' → {}", path.display()));
+                self.status_message = Some(format!("Saved '{name}' → {}", path.display()));
                 log::info!("Saved preset to {}", path.display());
             }
             Err(e) => {
@@ -432,7 +455,7 @@ impl LiveVisualizerApp {
     }
 
     pub fn refresh_presets(&mut self) {
-        self.preset_names = list_presets();
+        self.preset_names = list_user_presets();
     }
 
     pub fn pick_background(&mut self, ctx: &egui::Context) {

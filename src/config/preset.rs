@@ -43,11 +43,11 @@ pub enum SpectrumStyle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SpectrumLayout {
-    /// Frequency increases clockwise around the full 360° ring.
-    #[serde(alias = "full")]
-    Continuous,
     /// Half the spectrum mirrored across the center. Bass sits at the seam.
+    /// Older presets used `continuous` / `full` for a one-way ring — those
+    /// aliases now load as mirrored (the milk-drop default).
     #[default]
+    #[serde(alias = "continuous", alias = "full")]
     Mirrored,
     /// Legacy Trap Nation bass-ear layout.
     Split,
@@ -435,8 +435,8 @@ impl Default for StageSettings {
             logo_size: 0.72,
             disc_radius: 0.145,
             logo_glow: 0.0,
-            bass_pulse: 0.08,
-            beat_pulse: 0.14,
+            bass_pulse: 0.10,
+            beat_pulse: 0.22,
             logo_offset_x: 0.0,
             logo_offset_y: 0.0,
             logo_tint_r: 1.0,
@@ -950,10 +950,10 @@ impl Default for ParticleSettings {
 impl Default for BeatSettings {
     fn default() -> Self {
         Self {
-            sensitivity: 0.85,
-            cooldown: 0.22,
-            kick_sensitivity: 1.0,
-            mode: BeatMode::KickOnly,
+            sensitivity: 1.0,
+            cooldown: 0.18,
+            kick_sensitivity: 1.05,
+            mode: BeatMode::BassKick,
             bass_weight: 1.0,
             rms_weight: 0.0,
         }
@@ -964,7 +964,7 @@ impl BeatSettings {
     pub fn preset_bass_only() -> Self {
         Self {
             sensitivity: 1.05,
-            cooldown: 0.18,
+            cooldown: 0.17,
             kick_sensitivity: 1.05,
             mode: BeatMode::BassKick,
             bass_weight: 1.0,
@@ -974,9 +974,9 @@ impl BeatSettings {
 
     pub fn preset_kick_only() -> Self {
         Self {
-            sensitivity: 0.85,
-            cooldown: 0.22,
-            kick_sensitivity: 1.1,
+            sensitivity: 0.9,
+            cooldown: 0.2,
+            kick_sensitivity: 1.15,
             mode: BeatMode::KickOnly,
             bass_weight: 1.0,
             rms_weight: 0.0,
@@ -986,19 +986,19 @@ impl BeatSettings {
     pub fn preset_bass_level() -> Self {
         Self {
             sensitivity: 1.15,
-            cooldown: 0.16,
-            kick_sensitivity: 0.9,
+            cooldown: 0.15,
+            kick_sensitivity: 0.95,
             mode: BeatMode::BassLevel,
-            bass_weight: 1.1,
+            bass_weight: 1.15,
             rms_weight: 0.0,
         }
     }
 
     pub fn preset_sensitive() -> Self {
         Self {
-            sensitivity: 1.35,
-            cooldown: 0.16,
-            kick_sensitivity: 1.2,
+            sensitivity: 1.4,
+            cooldown: 0.14,
+            kick_sensitivity: 1.25,
             mode: BeatMode::BassKick,
             bass_weight: 1.0,
             rms_weight: 0.0,
@@ -1007,9 +1007,9 @@ impl BeatSettings {
 
     pub fn preset_tight() -> Self {
         Self {
-            sensitivity: 0.75,
-            cooldown: 0.26,
-            kick_sensitivity: 1.0,
+            sensitivity: 0.78,
+            cooldown: 0.24,
+            kick_sensitivity: 1.05,
             mode: BeatMode::KickOnly,
             bass_weight: 1.0,
             rms_weight: 0.0,
@@ -1041,7 +1041,7 @@ impl ColorSettings {
     }
 
     /// Like [`sample`](Self::sample), with a time offset for `ColorMode::Cycle`.
-    pub     fn sample_cycled(
+    pub fn sample_cycled(
         &self,
         mode: ColorMode,
         t: f32,
@@ -1198,46 +1198,84 @@ pub fn presets_dir() -> PathBuf {
     user_presets_dir()
 }
 
-/// Built-in factory presets (compiled into the binary from `presets/*.toml`).
+/// Read-only starter templates (compiled into the binary from `presets/*.toml`).
+pub const TEMPLATE_NAMES: &[&str] = &["default", "smooth", "neon", "particles"];
+
+/// Built-in factory / Default template name.
+pub const FACTORY_PRESET_NAME: &str = "default";
+
 fn builtin_preset_toml(name: &str) -> Option<&'static str> {
     match name {
         "default" => Some(include_str!("../../presets/default.toml")),
-        "rgb" => Some(include_str!("../../presets/rgb.toml")),
-        "mono" => Some(include_str!("../../presets/mono.toml")),
         "smooth" => Some(include_str!("../../presets/smooth.toml")),
-        "particles" => Some(include_str!("../../presets/particles.toml")),
-        "bar" => Some(include_str!("../../presets/bar.toml")),
         "neon" => Some(include_str!("../../presets/neon.toml")),
-        "beat_bass" => Some(include_str!("../../presets/beat_bass.toml")),
-        "beat_kick" => Some(include_str!("../../presets/beat_kick.toml")),
+        "particles" => Some(include_str!("../../presets/particles.toml")),
         _ => None,
     }
 }
 
-fn builtin_preset_names() -> &'static [&'static str] {
-    &[
-        "bar",
-        "beat_bass",
-        "beat_kick",
-        "default",
-        "mono",
-        "neon",
-        "particles",
-        "rgb",
-        "smooth",
-    ]
-}
-
-/// Built-in factory preset name. Cannot be overwritten by user saves.
-pub const FACTORY_PRESET_NAME: &str = "default";
-
+/// True for any starter template — cannot be overwritten by user saves.
 pub fn is_locked_preset(name: &str) -> bool {
-    sanitize_preset_name(name).eq_ignore_ascii_case(FACTORY_PRESET_NAME)
+    is_template(name)
 }
 
-/// Recommended look + tuning. Source of truth is the Rust `Default` impls.
+pub fn is_template(name: &str) -> bool {
+    let safe = sanitize_preset_name(name);
+    TEMPLATE_NAMES
+        .iter()
+        .any(|t| safe.eq_ignore_ascii_case(t))
+}
+
+/// Display label for a template id (`default` → `Default`).
+pub fn template_label(name: &str) -> &'static str {
+    match sanitize_preset_name(name).to_ascii_lowercase().as_str() {
+        "default" => "Default",
+        "smooth" => "Smooth",
+        "neon" => "Neon",
+        "particles" => "Particles",
+        _ => "Starter",
+    }
+}
+
+/// Starter templates in UI order.
+pub fn list_templates() -> Vec<String> {
+    TEMPLATE_NAMES.iter().map(|s| (*s).to_string()).collect()
+}
+
+/// User-saved presets only (never includes starter template names).
+pub fn list_user_presets() -> Vec<String> {
+    let mut names = Vec::new();
+    collect_preset_names(&user_presets_dir(), &mut names);
+    names.retain(|n| !is_template(n));
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Alias for [`list_user_presets`] — the picker “Yours” list.
+pub fn list_presets() -> Vec<String> {
+    list_user_presets()
+}
+
+/// Recommended Default look + tuning. Source of truth is the Rust `Default` impls.
 pub fn factory_preset() -> Preset {
     Preset::default()
+}
+
+/// Load a starter template by id. Templates never come from the user folder.
+pub fn load_template(name: &str) -> Result<Preset> {
+    let safe = sanitize_preset_name(name);
+    if !is_template(&safe) {
+        anyhow::bail!("'{safe}' is not a starter template");
+    }
+    if safe.eq_ignore_ascii_case(FACTORY_PRESET_NAME) {
+        return Ok(factory_preset());
+    }
+    let text = builtin_preset_toml(&safe.to_ascii_lowercase())
+        .ok_or_else(|| anyhow::anyhow!("Missing template '{safe}'"))?;
+    let mut preset: Preset = toml::from_str(text).context("Parsing template")?;
+    preset.name = safe.to_ascii_lowercase();
+    Ok(preset)
 }
 pub fn sanitize_preset_name(name: &str) -> String {
     let trimmed = name.trim();
@@ -1307,44 +1345,30 @@ pub fn save_settings(settings: &AppSettings) -> Result<()> {
     Ok(())
 }
 
-pub fn list_presets() -> Vec<String> {
-    let mut names: Vec<String> = builtin_preset_names()
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect();
-    collect_preset_names(&user_presets_dir(), &mut names);
-    names.retain(|n| !is_locked_preset(n));
-    names.sort();
-    names.dedup();
-    let mut out = vec![FACTORY_PRESET_NAME.to_string()];
-    out.extend(names);
-    out
-}
-
 pub fn load_preset(name: &str) -> Result<Preset> {
-    if is_locked_preset(name) {
-        return Ok(factory_preset());
+    let safe = sanitize_preset_name(name);
+    if is_template(&safe) {
+        return load_template(&safe);
     }
-    // User saves override built-ins of the same name.
-    let user_path = user_presets_dir().join(format!("{name}.toml"));
-    let text = if user_path.exists() {
-        fs::read_to_string(&user_path).with_context(|| format!("Reading {user_path:?}"))?
-    } else if let Some(builtin) = builtin_preset_toml(name) {
-        builtin.to_string()
-    } else {
-        anyhow::bail!("Unknown preset '{name}'");
-    };
+    let user_path = user_presets_dir().join(format!("{safe}.toml"));
+    if !user_path.exists() {
+        anyhow::bail!("Unknown preset '{safe}'");
+    }
+    let text =
+        fs::read_to_string(&user_path).with_context(|| format!("Reading {user_path:?}"))?;
     let mut preset: Preset = toml::from_str(&text).context("Parsing preset")?;
     if preset.name.is_empty() {
-        preset.name = name.to_string();
+        preset.name = safe;
     }
     Ok(preset)
 }
 
 pub fn save_preset(preset: &Preset) -> Result<PathBuf> {
     let safe = sanitize_preset_name(&preset.name);
-    if is_locked_preset(&safe) {
-        anyhow::bail!("'{FACTORY_PRESET_NAME}' is a built-in factory preset and cannot be overwritten");
+    if is_template(&safe) {
+        anyhow::bail!(
+            "'{safe}' is a starter template and cannot be overwritten — save as a new name"
+        );
     }
     let dir = user_presets_dir();
     fs::create_dir_all(&dir)

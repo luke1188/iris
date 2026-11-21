@@ -47,10 +47,10 @@ pub struct BeatDetector {
 impl Default for BeatDetector {
     fn default() -> Self {
         Self {
-            sensitivity: 0.85,
-            kick_sensitivity: 1.0,
-            cooldown: 0.22,
-            mode: BeatMode::KickOnly,
+            sensitivity: 1.0,
+            kick_sensitivity: 1.05,
+            cooldown: 0.18,
+            mode: BeatMode::BassKick,
             bass_weight: 1.0,
             rms_weight: 0.0,
             body_floor: 0.04,
@@ -82,7 +82,8 @@ impl BeatDetector {
     pub fn process(&mut self, bass: f32, rms: f32, body: f32, click: f32, attack: f32) -> f32 {
         const DT: f32 = 1.0 / 60.0;
         self.cooldown_left = (self.cooldown_left - DT).max(0.0);
-        self.pulse *= 0.76;
+        // Linger long enough for disc bounce / glitch to read (~180–220 ms).
+        self.pulse *= 0.88;
 
         let body = body.max(0.0);
         let click = click.max(0.0);
@@ -105,7 +106,7 @@ impl BeatDetector {
 
         // Rearm after the hit: attack must fall so one kick ≠ a burst of triggers.
         if self.rearm {
-            if attack < 0.08 && body_flux < 0.012 {
+            if attack < 0.10 && body_flux < 0.016 {
                 self.rearm = false;
             }
             return self.pulse.clamp(0.0, 1.0);
@@ -117,51 +118,61 @@ impl BeatDetector {
 
         let sens = self.sensitivity.clamp(0.25, 3.5);
         let punch = self.kick_sensitivity.clamp(0.25, 3.0);
-        // Strict at 1.0 — bass notes should not clear this.
-        let attack_need = (0.28 / (sens * 0.45 + punch * 0.55)).clamp(0.14, 0.5);
-        let flux_need = (0.10 / sens).clamp(0.055, 0.22);
-        let body_min = (0.10 / sens).clamp(0.055, 0.2);
+        // Slightly more forgiving than before — FFT body often lags the attack.
+        let attack_need = (0.22 / (sens * 0.45 + punch * 0.55)).clamp(0.11, 0.42);
+        let flux_need = (0.078 / sens).clamp(0.04, 0.18);
+        let body_min = (0.08 / sens).clamp(0.04, 0.16);
 
         // Snare / hat: lots of click, little kick body.
-        let looks_like_snare = click > body * 2.2 && body < 0.22;
+        let looks_like_snare = click > body * 2.4 && body < 0.20;
 
-        let sharp = attack > attack_need && attack_flux > attack_need * 0.22;
-        let body_hit = body_flux > flux_need && body > self.body_floor * 1.35 + body_min;
+        let sharp = attack > attack_need && attack_flux > attack_need * 0.18;
+        let body_hit = body_flux > flux_need && body > self.body_floor * 1.25 + body_min;
 
+        // Hold long enough for attack + body to land across neighboring frames.
         if sharp {
             self.attack_hold = 1.0;
         } else {
-            self.attack_hold *= 0.48;
+            self.attack_hold *= 0.74;
         }
         if body_hit {
             self.body_hold = 1.0;
         } else {
-            self.body_hold *= 0.48;
+            self.body_hold *= 0.74;
         }
 
         let kick_onset =
-            self.attack_hold > 0.55 && self.body_hold > 0.55 && !looks_like_snare;
+            self.attack_hold > 0.42 && self.body_hold > 0.42 && !looks_like_snare;
 
         let hit = match self.mode {
-            BeatMode::KickOnly | BeatMode::BassKick => kick_onset,
+            BeatMode::KickOnly => kick_onset,
+            // BassKick: same core path, plus a softer “punchy bass note” path.
+            BeatMode::BassKick => {
+                let soft = self.attack_hold > 0.28
+                    && self.body_hold > 0.28
+                    && body > body_min * 0.9
+                    && attack > attack_need * 0.65
+                    && !looks_like_snare;
+                kick_onset || soft
+            }
             BeatMode::BassLevel => {
                 kick_onset
                     || (self.bass_weight > 0.2
-                        && bass > 0.55
-                        && attack > attack_need * 0.55
-                        && body_flux > flux_need * 0.45)
+                        && bass > 0.48
+                        && attack > attack_need * 0.45
+                        && body_flux > flux_need * 0.35)
             }
             BeatMode::FullMix => {
                 kick_onset
                     || (self.rms_weight > 0.15
-                        && rms_flux > 0.08
-                        && attack > attack_need * 0.5)
+                        && rms_flux > 0.065
+                        && attack > attack_need * 0.45)
             }
         };
 
         if hit {
             self.pulse = 1.0;
-            self.cooldown_left = self.cooldown.max(0.18);
+            self.cooldown_left = self.cooldown.max(0.14);
             self.rearm = true;
             self.attack_hold = 0.0;
             self.body_hold = 0.0;

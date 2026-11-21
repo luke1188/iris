@@ -2,11 +2,12 @@
 
 use super::media::{cover_rect, fit_rect};
 use super::state::LiveVisualizerApp;
+use crate::audio::BeatMode;
 use crate::config::{
     BarCap, BeatSettings, ColorMode, ColorSettings, LogoMotion, LogoTransition, RgbColor,
     ScopeColorMode, SpectrumLayout, SpectrumStyle, CENTER_SCOPE_ID, CENTER_SPECTRUM_ID,
 };
-use egui::epaint::Mesh;
+use egui::epaint::{Mesh, Vertex, WHITE_UV};
 use egui::{self, Color32, Pos2, RichText, Sense, Shape, Stroke};
 
 pub fn draw_settings_panel(ctx: &egui::Context, app: &mut LiveVisualizerApp) {
@@ -88,7 +89,7 @@ pub fn draw_settings_contents(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                     draw_tuning_section(ui, app);
                 }
                 _ => {
-                    section_hint(ui, "Presets, particles, and display");
+                    section_hint(ui, "Starters, your saves, particles, and display");
                     draw_presets_section(ui, app);
                     ui.add_space(8.0);
                     draw_particles_section(ui, app);
@@ -121,108 +122,138 @@ fn section_frame(ui: &mut egui::Ui, title: &str, default_open: bool, add_content
 
 fn draw_presets_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Presets", true, |ui| {
-        ui.horizontal(|ui| {
-            if ui
-                .button("Reset to default")
-                .on_hover_text("Restore the built-in factory look and tuning (cannot be overwritten)")
-                .clicked()
-            {
-                app.reset_to_factory();
+        let active = match (app.settings.last_preset.as_deref(), app.preset_dirty) {
+            (Some(name), dirty) => {
+                let label = if crate::config::is_template(name) {
+                    crate::config::template_label(name).to_string()
+                } else {
+                    name.to_string()
+                };
+                if dirty {
+                    format!("{label} · edited")
+                } else {
+                    label
+                }
             }
-            if ui.button("Refresh").on_hover_text("Reload user presets folder").clicked() {
-                app.refresh_presets();
-            }
-            let active = match (
-                app.settings.last_preset.as_deref(),
-                app.preset_dirty,
-            ) {
-                (Some(name), true) => format!("{name} · edited"),
-                (Some(name), false) => name.to_string(),
-                (None, true) => "session · unsaved".into(),
-                (None, false) => "none".into(),
-            };
-            ui.label(
-                RichText::new(format!("Active: {active}"))
-                    .small()
-                    .color(if app.preset_dirty {
-                        Color32::from_rgb(255, 190, 80)
-                    } else {
-                        Color32::GRAY
-                    }),
-            );
-        });
+            (None, true) => "Working look · edited".into(),
+            (None, false) => "Working look".into(),
+        };
         ui.label(
-            RichText::new(format!(
-                "Session autosaves · user presets → {}",
-                crate::config::presets_dir().display()
-            ))
-            .small()
-            .color(Color32::DARK_GRAY),
+            RichText::new(format!("Working: {active}"))
+                .small()
+                .color(if app.preset_dirty {
+                    Color32::from_rgb(255, 190, 80)
+                } else {
+                    Color32::GRAY
+                }),
+        );
+        ui.label(
+            RichText::new("Starters are starting points. Save as… keeps a named look under Yours.")
+                .small()
+                .color(Color32::DARK_GRAY),
         );
 
-        ui.add_space(4.0);
-        let names = app.preset_names.clone();
+        // ── Starters ──────────────────────────────────────────────────
+        ui.add_space(6.0);
+        ui.label(RichText::new("Starters").small().strong());
         let pending = app.pending_preset_load.clone();
-        egui::Grid::new("preset_grid")
-            .num_columns(2)
-            .spacing([8.0, 4.0])
-            .show(ui, |ui| {
-                for name in &names {
-                    let locked = crate::config::is_locked_preset(name);
-                    let selected = !app.preset_dirty
-                        && app.settings.last_preset.as_deref() == Some(name.as_str());
-                    let label = if pending.as_deref() == Some(name.as_str()) {
-                        format!("{name}  (click again)")
-                    } else if locked {
-                        format!("{name}  🔒")
-                    } else {
-                        name.clone()
-                    };
-                    let response = ui.selectable_label(selected, label);
-                    let response = if locked {
-                        response.on_hover_text("Factory preset — always resets to recommended settings")
-                    } else {
-                        response
-                    };
-                    if response.clicked() {
-                        if locked {
-                            app.reset_to_factory();
-                        } else {
-                            app.apply_preset_by_name(name);
-                        }
-                    }
-                    ui.end_row();
+        let last = app.settings.last_preset.clone();
+        ui.horizontal_wrapped(|ui| {
+            for id in crate::config::list_templates() {
+                let label = crate::config::template_label(&id);
+                let selected =
+                    !app.preset_dirty && last.as_deref() == Some(id.as_str());
+                let text = if pending.as_deref() == Some(id.as_str()) {
+                    format!("{label}…")
+                } else {
+                    label.to_string()
+                };
+                let response = ui
+                    .selectable_label(selected, text)
+                    .on_hover_text("Starter — build on this, then Save as…");
+                if response.clicked() {
+                    app.apply_preset_by_name(&id);
+                }
+            }
+        });
+
+        // ── Yours ─────────────────────────────────────────────────────
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Yours").small().strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .small_button("↻")
+                    .on_hover_text("Reload your presets folder")
+                    .clicked()
+                {
+                    app.refresh_presets();
                 }
             });
+        });
 
-        ui.add_space(6.0);
+        let names = app.preset_names.clone();
+        if names.is_empty() {
+            ui.label(
+                RichText::new("No saved presets yet — tweak a starter, then Save as…")
+                    .small()
+                    .color(Color32::DARK_GRAY),
+            );
+        } else {
+            egui::Grid::new("user_preset_grid")
+                .num_columns(1)
+                .spacing([8.0, 4.0])
+                .show(ui, |ui| {
+                    for name in &names {
+                        let selected = !app.preset_dirty
+                            && last.as_deref() == Some(name.as_str());
+                        let text = if pending.as_deref() == Some(name.as_str()) {
+                            format!("{name}  (click again)")
+                        } else {
+                            name.clone()
+                        };
+                        if ui.selectable_label(selected, text).clicked() {
+                            app.apply_preset_by_name(name);
+                        }
+                        ui.end_row();
+                    }
+                });
+        }
+
+        // ── Save as ───────────────────────────────────────────────────
+        ui.add_space(8.0);
+        let on_user = last
+            .as_deref()
+            .is_some_and(|n| !crate::config::is_template(n));
+        let locked_name = crate::config::is_locked_preset(&app.preset_save_name);
+        let save_name = crate::config::sanitize_preset_name(&app.preset_save_name);
+        let exists = app.preset_names.iter().any(|n| n == &save_name);
+        let save_label = if locked_name {
+            "Locked"
+        } else if exists && on_user && last.as_deref() == Some(save_name.as_str()) {
+            "Save"
+        } else if exists {
+            "Overwrite"
+        } else {
+            "Save as"
+        };
+
         ui.horizontal(|ui| {
             ui.label("Save as");
             ui.text_edit_singleline(&mut app.preset_save_name);
-            let locked_name = crate::config::is_locked_preset(&app.preset_save_name);
-            let save_label = if locked_name {
-                "Locked"
-            } else if app.preset_names.iter().any(|n| n == &app.preset_save_name) {
-                "Overwrite"
-            } else {
-                "Save"
-            };
             let save = ui
-                .add_enabled(
-                    !locked_name,
-                    egui::Button::new(save_label),
-                )
+                .add_enabled(!locked_name, egui::Button::new(save_label))
                 .on_hover_text(if locked_name {
-                    "Choose a different name — default cannot be overwritten"
+                    "Starter names are reserved — pick a new name"
                 } else {
-                    "Writes a named preset file (session already autosaves)"
+                    "Write a named preset under Yours (session still restores on relaunch)"
                 });
             if save.clicked() {
                 app.save_current_preset();
             }
         });
         ui.label(
-            RichText::new("Letters, numbers, - and _ only (spaces become _). default is factory-locked.")
+            RichText::new("Letters, numbers, - and _ only. Starter names are reserved.")
                 .small()
                 .color(Color32::DARK_GRAY),
         );
@@ -235,25 +266,66 @@ fn draw_beat_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
         level_bar(ui, "Kick", app.features.kick, Color32::from_rgb(255, 70, 140));
         ui.add_space(6.0);
 
+        let mut changed = false;
+        {
+            let b = &mut app.settings.beat;
+            ui.label(RichText::new("Detect").small().strong());
+            ui.horizontal_wrapped(|ui| {
+                changed |= ui
+                    .selectable_value(&mut b.mode, BeatMode::BassKick, "Bass kick")
+                    .on_hover_text("Recommended: kick attacks + a soft bass-punch path")
+                    .changed();
+                changed |= ui
+                    .selectable_value(&mut b.mode, BeatMode::KickOnly, "Kick only")
+                    .on_hover_text("Strict drum kicks — ignores sustained rumble")
+                    .changed();
+                changed |= ui
+                    .selectable_value(&mut b.mode, BeatMode::BassLevel, "Bass level")
+                    .on_hover_text("Follows bass energy (sustains + kicks)")
+                    .changed();
+            });
+            ui.add_space(4.0);
+            changed |= slider(ui, "Sensitivity", &mut b.sensitivity, 0.4..=3.5)
+                .on_hover_text("Overall beat threshold")
+                .changed();
+            changed |= slider(ui, "Kick punch", &mut b.kick_sensitivity, 0.3..=3.0)
+                .on_hover_text("How hard the attack / kick body needs to hit")
+                .changed();
+            changed |= slider(ui, "Cooldown", &mut b.cooldown, 0.12..=0.4)
+                .on_hover_text("Minimum time between beat pulses")
+                .changed();
+            if b.mode == BeatMode::BassLevel {
+                changed |= slider(ui, "Bass weight", &mut b.bass_weight, 0.0..=2.5)
+                    .on_hover_text("How much sustained bass feeds the bounce")
+                    .changed();
+            }
+            if b.mode == BeatMode::FullMix {
+                changed |= slider(ui, "RMS weight", &mut b.rms_weight, 0.0..=2.0)
+                    .on_hover_text("Overall loudness contribution")
+                    .changed();
+            }
+        }
+
+        ui.add_space(4.0);
         ui.label(RichText::new("Quick setups").small().strong());
         ui.horizontal_wrapped(|ui| {
             if ui
-                .button("Bass kick")
-                .on_hover_text("Kick hits with bass weight — good default for most tracks")
+                .button("Default")
+                .on_hover_text("Bass kick — good for most tracks")
                 .clicked()
             {
                 app.apply_beat_preset(BeatSettings::preset_bass_only());
             }
             if ui
                 .button("Kick only")
-                .on_hover_text("Strict drum kicks — ignores sustained 808 rumble")
+                .on_hover_text("Strict drum kicks")
                 .clicked()
             {
                 app.apply_beat_preset(BeatSettings::preset_kick_only());
             }
             if ui
-                .button("Bass level")
-                .on_hover_text("Follows bass energy (sustains + kicks) — great for 808s")
+                .button("Bass sustain")
+                .on_hover_text("Follows bass level — great for 808s")
                 .clicked()
             {
                 app.apply_beat_preset(BeatSettings::preset_bass_level());
@@ -267,33 +339,12 @@ fn draw_beat_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
             }
             if ui
                 .button("Tight")
-                .on_hover_text("Fewer hits, longer cooldown — busy tracks / loud clubs")
+                .on_hover_text("Fewer hits, longer cooldown — busy tracks")
                 .clicked()
             {
                 app.apply_beat_preset(BeatSettings::preset_tight());
             }
         });
-
-        ui.add_space(6.0);
-        let mut changed = false;
-        {
-            let b = &mut app.settings.beat;
-            changed |= slider(ui, "Sensitivity", &mut b.sensitivity, 0.4..=3.5)
-                .on_hover_text("Overall beat threshold")
-                .changed();
-            changed |= slider(ui, "Kick punch", &mut b.kick_sensitivity, 0.3..=3.0)
-                .on_hover_text("How hard kick attacks need to hit")
-                .changed();
-            changed |= slider(ui, "Bass weight", &mut b.bass_weight, 0.0..=2.5)
-                .on_hover_text("How much bass energy feeds the bounce")
-                .changed();
-            changed |= slider(ui, "RMS weight", &mut b.rms_weight, 0.0..=2.0)
-                .on_hover_text("Overall loudness contribution (usually leave low)")
-                .changed();
-            changed |= slider(ui, "Cooldown", &mut b.cooldown, 0.16..=0.4)
-                .on_hover_text("Minimum time between beat pulses")
-                .changed();
-        }
 
         ui.add_space(6.0);
         ui.label(RichText::new("Disc bounce").small().strong());
@@ -312,7 +363,7 @@ fn draw_beat_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
             .on_hover_text("Restores Bass bounce / Beat bounce on the logo disc")
             .clicked()
         {
-            app.settings.stage.bass_pulse = 0.12;
+            app.settings.stage.bass_pulse = 0.10;
             app.settings.stage.beat_pulse = 0.22;
             app.mark_settings_dirty();
         }
@@ -455,6 +506,13 @@ fn draw_levels_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
 fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Spectrum ring", true, |ui| {
         let mut changed = false;
+        let is_bars = app.settings.visualizer.style == SpectrumStyle::Bars;
+        let is_smooth = matches!(
+            app.settings.visualizer.style,
+            SpectrumStyle::Smooth | SpectrumStyle::SoftGlow
+        );
+
+        // ── Style & layout ────────────────────────────────────────────
         {
             let v = &mut app.settings.visualizer;
             ui.label(RichText::new("Style").small().strong());
@@ -464,9 +522,11 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                     .changed();
                 changed |= ui
                     .selectable_value(&mut v.style, SpectrumStyle::Smooth, "Smooth")
+                    .on_hover_text("MilkDrop-style filled ring")
                     .changed();
                 changed |= ui
                     .selectable_value(&mut v.style, SpectrumStyle::SoftGlow, "Glow")
+                    .on_hover_text("Smooth ring with a soft outer bloom")
                     .changed();
             });
             ui.label(RichText::new("Layout").small().strong());
@@ -474,17 +534,13 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                 changed |= ui
                     .selectable_value(&mut v.layout, SpectrumLayout::Mirrored, "Mirrored")
                     .on_hover_text(
-                        "Recommended: bass at the bottom, same spectrum on both sides",
+                        "Recommended: same spectrum on both sides (bass at the seam)",
                     )
-                    .changed();
-                changed |= ui
-                    .selectable_value(&mut v.layout, SpectrumLayout::Continuous, "Continuous")
-                    .on_hover_text("Frequency increases clockwise around the full ring")
                     .changed();
                 changed |= ui
                     .selectable_value(&mut v.layout, SpectrumLayout::Split, "Split ears")
                     .on_hover_text(
-                        "Legacy Trap Nation layout: bass/sub as ear spikes, mids/highs complete the ring",
+                        "Legacy Trap Nation layout: bass/sub as ear spikes",
                     )
                     .changed();
             });
@@ -513,14 +569,18 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                     .on_hover_text("Push ear bases outward from the disc")
                     .changed();
             }
+        }
 
-            ui.add_space(6.0);
-            ui.label(RichText::new("Ring color").small().strong());
+        // ── Color ─────────────────────────────────────────────────────
+        ui.add_space(6.0);
+        ui.label(RichText::new("Color").small().strong());
+        {
+            let v = &mut app.settings.visualizer;
             ui.horizontal_wrapped(|ui| {
                 for (mode, label, tip) in [
                     (ColorMode::Rainbow, "Rainbow", "Cyan → blue → violet → magenta along frequency"),
                     (ColorMode::Solid, "Solid", "One color for the whole ring"),
-                    (ColorMode::Gradient, "Gradient", "Blend from low → high"),
+                    (ColorMode::Gradient, "Gradient", "Blend from low → high frequency"),
                     (ColorMode::Cycle, "Cycle", "Scrolling rainbow"),
                     (ColorMode::Bands, "Bands", "Custom color per frequency band"),
                     (ColorMode::Mono, "Mono", "Grayscale"),
@@ -599,96 +659,129 @@ fn draw_visualizer_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
             }
             changed |= slider(
                 ui,
-                "Color intensity",
+                "Intensity",
                 &mut app.settings.colors.rgb_intensity,
                 0.3..=1.6,
             )
-            .on_hover_text("Brightness of spectrum / FFT colors")
+            .on_hover_text("Brightness of spectrum colors")
             .changed();
         }
 
+        // ── Shape ─────────────────────────────────────────────────────
+        ui.add_space(6.0);
+        ui.label(RichText::new("Shape").small().strong());
         {
             let v = &mut app.settings.visualizer;
-            let mut count = v.segment_count as f32;
-            if slider(ui, "Bar count", &mut count, 64.0..=384.0)
-                .on_hover_text("Dense rectangular bars around the ring")
-                .changed()
-            {
-                v.segment_count = count.round() as u32;
-                changed = true;
-            }
-            changed |= slider(ui, "Bar fill", &mut v.bar_fill, 0.5..=0.9)
-                .on_hover_text("How much of each slot the bar occupies (rest is the gap)")
-                .changed();
             changed |= slider(ui, "Rotation", &mut v.rotation_offset, 0.0..=1.0)
                 .on_hover_text("0.5 puts bass at the bottom in Mirrored mode")
                 .changed();
-            changed |= ui
-                .checkbox(&mut v.reverse_spectrum, "Reverse frequency direction")
+            changed |= slider(ui, "Max length", &mut v.max_bar_length, 0.15..=0.85)
+                .on_hover_text("How far the ring reaches outward")
                 .changed();
-            ui.horizontal(|ui| {
-                ui.add_sized([110.0, 18.0], egui::Label::new("Bar ends"));
-                changed |= ui
-                    .selectable_value(&mut v.bar_cap, BarCap::Square, "Square")
-                    .changed();
-                changed |= ui
-                    .selectable_value(&mut v.bar_cap, BarCap::Rounded, "Rounded")
-                    .changed();
-            });
-            changed |= slider(ui, "Thickness", &mut v.thickness, 0.5..=6.0)
-                .on_hover_text("Used by Smooth / Glow styles")
-                .changed();
-            changed |= slider(ui, "Min height", &mut v.min_bar_height, 0.004..=0.03)
-                .on_hover_text("Resting crown height (viewport fraction)")
-                .changed();
-            changed |= slider(ui, "Max length", &mut v.max_bar_length, 0.15..=0.85).changed();
             changed |= slider(ui, "Glow", &mut v.glow, 0.0..=1.5).changed();
-            changed |= slider(ui, "Smoothing", &mut v.smoothing, 0.05..=0.95)
-                .on_hover_text("Spatial blur on the Smooth / Glow ring body")
-                .changed();
-            changed |= slider(ui, "Outline width", &mut v.outline_width, 0.5..=3.5)
-                .on_hover_text("Outer rim stroke (Smooth / Glow)")
-                .changed();
-            changed |= slider(ui, "Outline smooth", &mut v.outline_smooth, 0.0..=1.0)
-                .on_hover_text("Extra blur on the outer outline for a cleaner edge")
-                .changed();
-            ui.add_space(4.0);
-            ui.label(RichText::new("Analysis").small().strong());
+
+            if is_bars {
+                let mut count = v.segment_count as f32;
+                if slider(ui, "Bar count", &mut count, 64.0..=384.0)
+                    .on_hover_text("Dense rectangular bars around the ring")
+                    .changed()
+                {
+                    v.segment_count = count.round() as u32;
+                    changed = true;
+                }
+                changed |= slider(ui, "Bar fill", &mut v.bar_fill, 0.5..=0.9)
+                    .on_hover_text("How much of each slot the bar occupies")
+                    .changed();
+                changed |= slider(ui, "Min height", &mut v.min_bar_height, 0.004..=0.03)
+                    .on_hover_text("Resting bar height")
+                    .changed();
+                ui.horizontal(|ui| {
+                    ui.add_sized([110.0, 18.0], egui::Label::new("Bar ends"));
+                    changed |= ui
+                        .selectable_value(&mut v.bar_cap, BarCap::Square, "Square")
+                        .changed();
+                    changed |= ui
+                        .selectable_value(&mut v.bar_cap, BarCap::Rounded, "Rounded")
+                        .changed();
+                });
+            }
+
+            if is_smooth {
+                changed |= slider(ui, "Body smooth", &mut v.smoothing, 0.05..=0.95)
+                    .on_hover_text("Spatial blur on the ring body")
+                    .changed();
+                changed |= slider(ui, "Outline", &mut v.outline_width, 0.5..=3.5)
+                    .on_hover_text("Outer rim stroke width")
+                    .changed();
+                changed |= slider(ui, "Outline soft", &mut v.outline_smooth, 0.0..=1.0)
+                    .on_hover_text("Extra blur on the outer outline")
+                    .changed();
+            }
+        }
+
+        // ── Motion ────────────────────────────────────────────────────
+        ui.add_space(4.0);
+        ui.label(RichText::new("Motion").small().strong());
+        {
+            let v = &mut app.settings.visualizer;
             changed |= slider(ui, "Attack ms", &mut v.attack_ms, 12.0..=80.0)
-                .on_hover_text("How fast bars rise into transients")
+                .on_hover_text("How fast the ring rises into transients")
                 .changed();
             changed |= slider(ui, "Release ms", &mut v.release_ms, 80.0..=400.0)
-                .on_hover_text("How slowly bars fall after a hit")
-                .changed();
-            changed |= slider(ui, "Noise floor", &mut v.noise_floor_db, -90.0..=-40.0)
-                .on_hover_text("dB below this does not move the ring")
-                .changed();
-            changed |= slider(ui, "Ceiling dB", &mut v.ceiling_db, -30.0..=0.0)
-                .on_hover_text("dB that maps to full bar height")
-                .changed();
-            changed |= slider(ui, "Response", &mut v.response_exponent, 1.0..=2.2)
-                .on_hover_text("Higher = only strong frequencies get tall")
-                .changed();
-            changed |= slider(ui, "Freq smooth", &mut v.frequency_smoothing, 0.0..=0.8)
-                .on_hover_text("Blur neighboring bands so bars don't spike alone")
+                .on_hover_text("How slowly the ring falls after a hit")
                 .changed();
             changed |= slider(ui, "Transient", &mut v.transient_scale, 0.0..=0.5)
                 .on_hover_text("Extra punch on kicks/snares")
                 .changed();
-            changed |= slider(ui, "Bass weight", &mut v.bass_response, 0.3..=2.0).changed();
-            changed |= slider(ui, "Mid weight", &mut v.mid_response, 0.3..=2.0).changed();
-            changed |= slider(ui, "Treble weight", &mut v.high_response, 0.3..=2.0).changed();
-            changed |= slider(ui, "Min freq", &mut v.min_frequency, 20.0..=80.0)
-                .on_hover_text("Analysis floor. Bar mode still skips sub rumble (~20–65 Hz) on the ring")
+            changed |= slider(ui, "Band smooth", &mut v.frequency_smoothing, 0.0..=0.8)
+                .on_hover_text("Blur neighboring frequencies so spikes don't stand alone")
                 .changed();
-            changed |= slider(ui, "Max freq", &mut v.max_frequency, 8_000.0..=20_000.0).changed();
-            changed |= ui.checkbox(&mut v.show_base_ring, "Show dim base ring").changed();
-            if v.show_base_ring {
-                changed |= slider(ui, "Ring width", &mut v.base_ring_width, 0.4..=3.0).changed();
-                changed |= slider(ui, "Ring bright", &mut v.base_ring_brightness, 0.04..=0.5)
-                    .changed();
-            }
         }
+
+        // ── Advanced (collapsed) ──────────────────────────────────────
+        egui::CollapsingHeader::new(RichText::new("Advanced").small())
+            .default_open(false)
+            .show(ui, |ui| {
+                let v = &mut app.settings.visualizer;
+                changed |= ui
+                    .checkbox(&mut v.reverse_spectrum, "Reverse frequency direction")
+                    .changed();
+                changed |= slider(ui, "Bass weight", &mut v.bass_response, 0.3..=2.0)
+                    .on_hover_text("Ring-only bass emphasis (Tuning tab has room gain)")
+                    .changed();
+                changed |= slider(ui, "Mid weight", &mut v.mid_response, 0.3..=2.0).changed();
+                changed |= slider(ui, "Treble weight", &mut v.high_response, 0.3..=2.0)
+                    .changed();
+                changed |= slider(ui, "Response curve", &mut v.response_exponent, 1.0..=2.2)
+                    .on_hover_text("Higher = only strong frequencies get tall")
+                    .changed();
+                changed |= slider(ui, "Noise floor", &mut v.noise_floor_db, -90.0..=-40.0)
+                    .on_hover_text("dB below this does not move the ring")
+                    .changed();
+                changed |= slider(ui, "Ceiling dB", &mut v.ceiling_db, -30.0..=0.0)
+                    .on_hover_text("dB that maps to full height")
+                    .changed();
+                changed |= slider(ui, "Min freq", &mut v.min_frequency, 20.0..=80.0)
+                    .on_hover_text("Analysis floor")
+                    .changed();
+                changed |= slider(ui, "Max freq", &mut v.max_frequency, 8_000.0..=20_000.0)
+                    .changed();
+                if is_bars {
+                    changed |= ui.checkbox(&mut v.show_base_ring, "Show dim base ring").changed();
+                    if v.show_base_ring {
+                        changed |=
+                            slider(ui, "Ring width", &mut v.base_ring_width, 0.4..=3.0).changed();
+                        changed |= slider(
+                            ui,
+                            "Ring bright",
+                            &mut v.base_ring_brightness,
+                            0.04..=0.5,
+                        )
+                        .changed();
+                    }
+                }
+            });
+
         if changed {
             app.mark_settings_dirty();
         }
@@ -1487,7 +1580,8 @@ fn draw_spectrum(
 
     let n = spectrum.len();
     let mut smoothed = spectrum.clone();
-    let wrap_ring = vis.layout != SpectrumLayout::Split;
+    // Linear frequency bins — never wrap bass into highs (that was for Continuous).
+    let wrap_freq = false;
 
     // Soft gate: only squash bins whose neighbors are also quiet.
     // Punching a hole next to a live bin tessellates as a radial "laser".
@@ -1499,7 +1593,7 @@ fn draw_spectrum(
             continue;
         }
         let left = if i == 0 {
-            if wrap_ring {
+            if wrap_freq {
                 gated[n - 1]
             } else {
                 gated[i]
@@ -1508,7 +1602,7 @@ fn draw_spectrum(
             gated[i - 1]
         };
         let right = if i + 1 >= n {
-            if wrap_ring {
+            if wrap_freq {
                 gated[0]
             } else {
                 gated[i]
@@ -1534,7 +1628,7 @@ fn draw_spectrum(
                 smooth_amt
             };
             let a = if i == 0 {
-                if wrap_ring {
+                if wrap_freq {
                     prev[n - 1]
                 } else {
                     prev[i]
@@ -1544,7 +1638,7 @@ fn draw_spectrum(
             };
             let b = prev[i];
             let c = if i + 1 >= n {
-                if wrap_ring {
+                if wrap_freq {
                     prev[0]
                 } else {
                     prev[i]
@@ -1565,14 +1659,13 @@ fn draw_spectrum(
     if vis.layout == SpectrumLayout::Split {
         max_len *= 1.28;
     }
-    let thickness = vis.thickness.clamp(0.8, 4.0);
     let intensity = 0.9 * app_color_intensity(vis);
     let glow = vis.glow * 0.4;
     let cycle = time * vis.cycle_speed.clamp(0.0, 3.0);
     let ear_lift = disc_r * vis.ear_radius.clamp(0.0, 0.35);
     let mut pts = collect_ring_points(&smoothed, vis, features);
 
-    // Extra outline-oriented blur. `pts` always go all the way around the disc.
+    // Spatial blur around the disc (neighbors on the ring, not in frequency).
     let outline_s = vis.outline_smooth.clamp(0.0, 1.0);
     if outline_s > 0.05 {
         blur_ring_mags(&mut pts, outline_s, true);
@@ -1581,42 +1674,21 @@ fn draw_spectrum(
     // can't form a radial spoke. Wide quiet regions (and silence) stay down.
     lift_ring_notches(&mut pts, true);
 
-    match vis.style {
-        SpectrumStyle::Bars => {
-            draw_ring_bars(
-                painter,
-                center,
-                base_r,
-                max_len,
-                thickness,
-                glow,
-                intensity,
-                vis.color_mode,
-                colors,
-                cycle,
-                ear_lift,
-                &pts,
-            );
-        }
-        SpectrumStyle::Smooth | SpectrumStyle::SoftGlow => {
-            draw_ring_smooth(
-                painter,
-                center,
-                base_r,
-                max_len,
-                glow,
-                intensity,
-                vis.color_mode,
-                colors,
-                cycle,
-                matches!(vis.style, SpectrumStyle::SoftGlow),
-                vis.layout != SpectrumLayout::Split,
-                vis.outline_width.clamp(0.4, 4.5),
-                ear_lift,
-                &pts,
-            );
-        }
-    }
+    draw_ring_smooth(
+        painter,
+        center,
+        base_r,
+        max_len,
+        glow,
+        intensity,
+        vis.color_mode,
+        colors,
+        cycle,
+        matches!(vis.style, SpectrumStyle::SoftGlow),
+        vis.outline_width.clamp(0.4, 4.5),
+        ear_lift,
+        &pts,
+    );
 }
 
 #[derive(Clone, Copy)]
@@ -1634,20 +1706,27 @@ fn collect_ring_points(
     features: &crate::audio::AudioFeatures,
 ) -> Vec<SpecPoint> {
     let n = smoothed.len().max(8);
+    let rot = vis.rotation_offset.rem_euclid(1.0);
     match vis.layout {
-        SpectrumLayout::Continuous | SpectrumLayout::Mirrored => (0..n)
+        SpectrumLayout::Mirrored => (0..n)
             .map(|i| {
-                let t = (i as f32 + 0.5) / n as f32;
-                let mag = if vis.layout == SpectrumLayout::Mirrored {
-                    let u = if t <= 0.5 { t * 2.0 } else { (1.0 - t) * 2.0 };
-                    interp_spec(smoothed, u * (n.saturating_sub(1) as f32))
+                // Unrotated slot — bass at 12 o'clock before rotation.
+                let slot = (i as f32 + 0.5) / n as f32;
+                // Distance from bass seam → 0 at bass, 1 at highs (both sides).
+                let mut freq = if slot <= 0.5 {
+                    slot * 2.0
                 } else {
-                    smoothed[i].clamp(0.0, 1.2)
+                    (1.0 - slot) * 2.0
                 };
+                if vis.reverse_spectrum {
+                    freq = 1.0 - freq;
+                }
+                let mag = interp_spec(smoothed, freq * (n.saturating_sub(1) as f32));
                 SpecPoint {
-                    t,
+                    t: (slot + rot).rem_euclid(1.0),
                     mag,
-                    hue: t,
+                    // Color follows frequency, not angle — critical for mirrored gradients.
+                    hue: freq.clamp(0.0, 1.0),
                     ear: 0.0,
                 }
             })
@@ -1662,13 +1741,20 @@ fn collect_ring_points(
             let punch = (features.bass * 0.5 + features.kick * 0.95).min(1.2);
             (0..n)
                 .map(|i| {
-                    let t = (i as f32 + 0.5) / n as f32;
-                    let u = if t <= 0.5 { t * 2.0 } else { (1.0 - t) * 2.0 };
+                    let slot = (i as f32 + 0.5) / n as f32;
+                    let mut u = if slot <= 0.5 {
+                        slot * 2.0
+                    } else {
+                        (1.0 - slot) * 2.0
+                    };
+                    if vis.reverse_spectrum {
+                        u = 1.0 - u;
+                    }
                     let (mag, ear) = trap_nation_mag(
                         smoothed, cut, rest, u, punch, ear_gain, ear_count, ear_angle, ear_width,
                     );
                     SpecPoint {
-                        t,
+                        t: (slot + rot).rem_euclid(1.0),
                         mag,
                         hue: (0.06 + u * 0.82).clamp(0.0, 1.0),
                         ear,
@@ -1714,22 +1800,6 @@ fn trap_nation_mag(
     let body = body * (1.0 - ear * 0.58);
 
     ((ear_mag + body).clamp(0.0, 1.45), ear.min(1.0))
-}
-
-/// Blend bass (bin 0) and highs (last bin) across a few samples so Full layout
-/// doesn't join them as a radial spoke at 12 o'clock.
-fn close_full_seam(mags: &mut [f32]) {
-    let n = mags.len();
-    if n < 8 {
-        return;
-    }
-    let k = (n / 20).clamp(6, 14);
-    let target = (mags[0] + mags[n - 1]) * 0.5;
-    for i in 0..k {
-        let w = ((k - i) as f32 / k as f32).powf(1.35);
-        mags[i] = mags[i] * (1.0 - w) + target * w;
-        mags[n - 1 - i] = mags[n - 1 - i] * (1.0 - w) + target * w;
-    }
 }
 
 /// Raise bins that fall faster than `max_drop` below a neighbor (both directions).
@@ -1896,7 +1966,6 @@ fn draw_ring_smooth(
     colors: &ColorSettings,
     cycle: f32,
     soft_glow: bool,
-    rainbow_wrap: bool,
     outline_width: f32,
     ear_lift: f32,
     pts: &[SpecPoint],
@@ -1906,18 +1975,16 @@ fn draw_ring_smooth(
     }
     let n = pts.len();
 
-    // Soft-close Full seam: blend first/last mags so bass/highs don't meet as a spoke.
-    let mut mags: Vec<f32> = pts
-        .iter()
-        .map(|p| p.mag.clamp(0.0, 1.45))
-        .collect();
-    if rainbow_wrap && n >= 8 {
-        close_full_seam(&mut mags);
-    }
+    let mut mags: Vec<f32> = pts.iter().map(|p| p.mag.clamp(0.0, 1.45)).collect();
     slope_limit_down(&mut mags, true, 0.22);
 
     // Thin resting ring so quiet frequency stretches stay connected.
     let min_len = (max_len * 0.05).max(2.5);
+
+    // Batched meshes — per-vertex colors so mirrored gradients blend instead of banding.
+    let mut body = Mesh::default();
+    let mut bloom = Mesh::default();
+    let mut rim = Mesh::default();
 
     for i in 0..n {
         let j = (i + 1) % n;
@@ -1931,46 +1998,131 @@ fn draw_ring_smooth(
         let inner1 = ring_pos(center, b.t, r1);
         let outer0 = ring_pos(center, a.t, r0 + len0);
         let outer1 = ring_pos(center, b.t, r1 + len1);
-        let hue = if rainbow_wrap && j == 0 {
-            1.0
-        } else {
-            (a.hue + b.hue) * 0.5
-        };
-        let color = spectrum_color(hue, intensity, mode, colors, cycle);
+        let c0 = with_alpha(spectrum_color(a.hue, intensity, mode, colors, cycle), 220);
+        let c1 = with_alpha(spectrum_color(b.hue, intensity, mode, colors, cycle), 220);
 
         if soft_glow && glow > 0.05 {
-            let gc = with_alpha(color, (32.0 * glow) as u8);
-            painter.add(Shape::convex_polygon(
-                vec![
-                    inner0,
-                    ring_pos(center, a.t, r0 + len0 * 1.04),
-                    ring_pos(center, b.t, r1 + len1 * 1.04),
-                    inner1,
-                ],
-                gc,
-                Stroke::NONE,
-            ));
-        }
-        painter.add(Shape::convex_polygon(
-            vec![inner0, outer0, outer1, inner1],
-            with_alpha(color, 215),
-            Stroke::NONE,
-        ));
-        // Slightly thicker stroke with a soft under-glow for a cleaner rim.
-        if outline_width > 0.6 {
-            painter.line_segment(
-                [outer0, outer1],
-                Stroke::new(
-                    outline_width * 2.1,
-                    with_alpha(color, 48),
-                ),
+            let g0 = with_alpha(c0, (28.0 * glow).clamp(6.0, 56.0) as u8);
+            let g1 = with_alpha(c1, (28.0 * glow).clamp(6.0, 56.0) as u8);
+            push_ring_quad(
+                &mut bloom,
+                inner0,
+                ring_pos(center, a.t, r0 + len0 * 1.06),
+                ring_pos(center, b.t, r1 + len1 * 1.06),
+                inner1,
+                g0,
+                g1,
             );
         }
-        painter.line_segment(
-            [outer0, outer1],
-            Stroke::new(outline_width, with_alpha(color, 235)),
+        push_ring_quad(&mut body, inner0, outer0, outer1, inner1, c0, c1);
+
+        // Rim: soft under-glow + crisp stroke, colored per endpoint.
+        if outline_width > 0.55 {
+            push_ring_line(
+                &mut rim,
+                outer0,
+                outer1,
+                outline_width * 2.2,
+                with_alpha(c0, 42),
+                with_alpha(c1, 42),
+            );
+        }
+        push_ring_line(
+            &mut rim,
+            outer0,
+            outer1,
+            outline_width,
+            with_alpha(c0, 240),
+            with_alpha(c1, 240),
         );
     }
+
+    if !bloom.vertices.is_empty() {
+        painter.add(Shape::mesh(bloom));
+    }
+    if !body.vertices.is_empty() {
+        painter.add(Shape::mesh(body));
+    }
+    if !rim.vertices.is_empty() {
+        painter.add(Shape::mesh(rim));
+    }
+}
+
+fn push_ring_quad(
+    mesh: &mut Mesh,
+    inner0: Pos2,
+    outer0: Pos2,
+    outer1: Pos2,
+    inner1: Pos2,
+    c0: Color32,
+    c1: Color32,
+) {
+    let i = mesh.vertices.len() as u32;
+    mesh.vertices.extend_from_slice(&[
+        Vertex {
+            pos: inner0,
+            uv: WHITE_UV,
+            color: c0,
+        },
+        Vertex {
+            pos: outer0,
+            uv: WHITE_UV,
+            color: c0,
+        },
+        Vertex {
+            pos: outer1,
+            uv: WHITE_UV,
+            color: c1,
+        },
+        Vertex {
+            pos: inner1,
+            uv: WHITE_UV,
+            color: c1,
+        },
+    ]);
+    mesh.indices
+        .extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
+}
+
+/// Thick line as a thin quad so endpoint colors can differ (mirrored gradients).
+fn push_ring_line(
+    mesh: &mut Mesh,
+    a: Pos2,
+    b: Pos2,
+    width: f32,
+    ca: Color32,
+    cb: Color32,
+) {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let len = (dx * dx + dy * dy).sqrt().max(1e-4);
+    let hx = (-dy / len) * width * 0.5;
+    let hy = (dx / len) * width * 0.5;
+    let i = mesh.vertices.len() as u32;
+    mesh.vertices.extend_from_slice(&[
+        Vertex {
+            pos: Pos2::new(a.x - hx, a.y - hy),
+            uv: WHITE_UV,
+            color: ca,
+        },
+        Vertex {
+            pos: Pos2::new(a.x + hx, a.y + hy),
+            uv: WHITE_UV,
+            color: ca,
+        },
+        Vertex {
+            pos: Pos2::new(b.x + hx, b.y + hy),
+            uv: WHITE_UV,
+            color: cb,
+        },
+        Vertex {
+            pos: Pos2::new(b.x - hx, b.y - hy),
+            uv: WHITE_UV,
+            color: cb,
+        },
+    ]);
+    mesh.indices
+        .extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
 }
 
 fn paint_logo_glitch(

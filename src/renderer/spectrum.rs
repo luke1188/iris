@@ -229,12 +229,6 @@ fn layout_sample(
     features: &AudioFeatures,
 ) -> (f32, f32, f32) {
     match vis.layout {
-        SpectrumLayout::Continuous => {
-            let t = i as f32 / n.max(1) as f32;
-            let t = if vis.reverse_spectrum { 1.0 - t } else { t };
-            let t = remap_ring_t(t, vis);
-            (sample_band(spectrum, t), 0.0, t)
-        }
         SpectrumLayout::Mirrored => {
             let half = (n / 2).max(1);
             let dist = if i <= half { i } else { n - i };
