@@ -2,8 +2,8 @@
 
 use crate::audio::{AudioCapture, AudioDeviceInfo, AudioFeatures, Analyzer};
 use crate::config::{
-    is_center_effect, list_presets, load_preset, load_settings, sanitize_preset_name, save_preset,
-    save_settings, AppSettings, LogoMotion, LogoStyle, StageSettings,
+    list_presets, load_preset, load_settings, sanitize_preset_name, save_preset, save_settings,
+    AppSettings, LogoMotion, LogoStyle, LogoTransition, StageSettings,
 };
 use crate::display::{is_fullscreen, toggle_fullscreen};
 use crate::renderer::{ParticleSystem, RadialSpectrum};
@@ -12,14 +12,30 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::media::{self, LoadedTexture};
+use super::media::{self, LoadedTexture, StageBackground};
 use super::ui;
+use super::usage::UsageSampler;
+use super::video;
+
+const FADE_SECS_MIN: f32 = 0.05;
+const FADE_SECS_MAX: f32 = 2.0;
+
+fn clamp_fade_secs(item: f32, fallback: f32) -> f32 {
+    let v = if item >= FADE_SECS_MIN {
+        item
+    } else {
+        fallback
+    };
+    v.clamp(FADE_SECS_MIN, FADE_SECS_MAX)
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct FrameTiming {
     pub fps: f32,
     pub frame_ms: f32,
     pub audio_ms: f32,
+    pub cpu_percent: f32,
+    pub gpu_percent: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -32,7 +48,15 @@ pub enum CrtPhase {
 }
 
 impl CrtPhase {
-    pub fn factors(self) -> (f32, f32, f32) {
+    pub fn factors(self, kind: LogoTransition) -> (f32, f32, f32) {
+        match kind {
+            LogoTransition::ShrinkFade => self.shrink_fade_factors(),
+            LogoTransition::Crt => self.crt_factors(),
+            LogoTransition::Cut | LogoTransition::Glitch => (1.0, 1.0, 1.0),
+        }
+    }
+
+    fn crt_factors(self) -> (f32, f32, f32) {
         match self {
             CrtPhase::Idle => (1.0, 1.0, 1.0),
             CrtPhase::Out(t) => {
@@ -62,6 +86,24 @@ impl CrtPhase {
         }
     }
 
+    fn shrink_fade_factors(self) -> (f32, f32, f32) {
+        match self {
+            CrtPhase::Idle => (1.0, 1.0, 1.0),
+            CrtPhase::Out(t) => {
+                let u = t.clamp(0.0, 1.0);
+                let u = u * u * (3.0 - 2.0 * u);
+                let scale = (1.0 - u).max(0.02);
+                let alpha = (1.0 - u).powf(0.9);
+                (scale, scale, alpha)
+            }
+            CrtPhase::In(t) => {
+                let u = t.clamp(0.0, 1.0);
+                let u = u * u * (3.0 - 2.0 * u);
+                (1.0, 1.0, u)
+            }
+        }
+    }
+
     pub fn is_busy(self) -> bool {
         !matches!(self, CrtPhase::Idle)
     }
@@ -83,7 +125,7 @@ pub struct LiveVisualizerApp {
     pub timing: FrameTiming,
     pub error_message: Option<String>,
     pub status_message: Option<String>,
-    pub background: Option<LoadedTexture>,
+    pub background: Option<StageBackground>,
     /// Parallel to `settings.logo_paths` — `None` for Scope/Spectrum effect slots.
     pub logos: Vec<Option<LoadedTexture>>,
     pub logo_index: usize,
@@ -112,14 +154,21 @@ pub struct LiveVisualizerApp {
     pub logo_motion_phase: f32,
     /// Smoothed heights for the Apple-style center spectrum bars.
     pub center_bars_smooth: Vec<f32>,
-    /// CRT transition: Idle / collapsing out / expanding in.
+    /// CRT / shrink-fade timeline: Idle / collapsing out / expanding in.
     pub crt_phase: CrtPhase,
+    /// Which animation is running for the current switch.
+    pub switch_transition: LogoTransition,
+    /// Fade-out duration for the current switch (seconds).
+    pub switch_fade_out_secs: f32,
+    /// Fade-in duration for the current switch (seconds).
+    pub switch_fade_in_secs: f32,
     /// Index to reveal after CRT-out completes.
     pub crt_pending_index: usize,
     last_frame: Instant,
     frame_count: u32,
     fps_timer: Instant,
     save_timer: Instant,
+    usage: UsageSampler,
     pub features_shared: Arc<parking_lot::Mutex<AudioFeatures>>,
 }
 
@@ -207,11 +256,15 @@ impl LiveVisualizerApp {
             logo_motion_phase: 0.0,
             center_bars_smooth: vec![0.0; 21],
             crt_phase: CrtPhase::Idle,
+            switch_transition: LogoTransition::Glitch,
+            switch_fade_out_secs: 0.40,
+            switch_fade_in_secs: 0.55,
             crt_pending_index: 0,
             last_frame: Instant::now(),
             frame_count: 0,
             fps_timer: Instant::now(),
             save_timer: Instant::now(),
+            usage: UsageSampler::new(),
             features_shared: Arc::new(parking_lot::Mutex::new(AudioFeatures::default())),
         };
 
@@ -384,8 +437,15 @@ impl LiveVisualizerApp {
 
     pub fn pick_background(&mut self, ctx: &egui::Context) {
         if let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "Images & video",
+                &[
+                    "png", "jpg", "jpeg", "webp", "bmp", "svg", "svgz", "mp4", "m4v", "mov",
+                ],
+            )
             .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "svg", "svgz"])
-            .set_title("Select background image")
+            .add_filter("Video", &["mp4", "m4v", "mov"])
+            .set_title("Select background image or video")
             .pick_file()
         {
             if let Err(e) = self.load_background_with_ctx(ctx, path) {
@@ -435,9 +495,17 @@ impl LiveVisualizerApp {
         ctx: &egui::Context,
         path: PathBuf,
     ) -> anyhow::Result<()> {
-        let tex = media::load_texture_from_path(ctx, &path, "background")?;
+        self.background = None;
+        let bg = if video::is_video_path(&path) {
+            let vid = video::load_video_background(ctx, &path)?;
+            self.status_message = Some("Background video looping (H.264, silent)".into());
+            StageBackground::Video(vid)
+        } else {
+            let tex = media::load_texture_from_path(ctx, &path, "background")?;
+            StageBackground::Image(tex)
+        };
         self.settings.background_path = Some(path.display().to_string());
-        self.background = Some(tex);
+        self.background = Some(bg);
         self.mark_settings_dirty();
         self.error_message = None;
         Ok(())
@@ -570,10 +638,17 @@ impl LiveVisualizerApp {
         let from = self.logo_index.min(self.playlist_len() - 1);
         self.logo_from_index = from;
 
-        let from_path = self.settings.logo_paths.get(from).map(|s| s.as_str()).unwrap_or("");
-        let to_path = self.settings.logo_paths.get(next).map(|s| s.as_str()).unwrap_or("");
-        let use_crt = self.settings.stage.crt_transition
-            && (is_center_effect(from_path) || is_center_effect(to_path));
+        let incoming = self.settings.logo_style(next);
+        let kind = incoming.transition;
+        self.switch_transition = kind;
+        self.switch_fade_out_secs = clamp_fade_secs(
+            incoming.fade_out_secs,
+            self.settings.stage.logo_fade_out_secs,
+        );
+        self.switch_fade_in_secs = clamp_fade_secs(
+            incoming.fade_in_secs,
+            self.settings.stage.logo_fade_in_secs,
+        );
 
         let hold = self.settings.logo_style(next).hold_secs.max(0.0);
         let hold = if hold > 0.2 {
@@ -582,17 +657,17 @@ impl LiveVisualizerApp {
             self.settings.stage.logo_hold_secs.max(1.0)
         };
 
-        if use_crt {
+        if kind.uses_timeline() {
             self.crt_pending_index = next;
             self.crt_phase = CrtPhase::Out(0.0);
             self.logo_switch_glitch_t = 0.0;
-            // Keep showing `from` until CRT-out finishes; then swap + CRT-in.
+            // Keep showing `from` until the out phase finishes; then swap + in.
         } else {
             self.logo_index = next;
             self.logo_hold_left = hold;
             self.crt_phase = CrtPhase::Idle;
             self.logo_switch_glitch_t =
-                if self.settings.stage.logo_glitch && self.playlist_len() > 1 {
+                if kind == LogoTransition::Glitch && self.playlist_len() > 1 {
                     1.0
                 } else {
                     0.0
@@ -616,12 +691,14 @@ impl LiveVisualizerApp {
     }
 
     fn tick_logo_cycle(&mut self, dt: f32) {
-        // CRT transition timeline.
-        const CRT_OUT_SECS: f32 = 0.28;
-        const CRT_IN_SECS: f32 = 0.32;
+        // Transition timeline.
+        let (out_secs, in_secs) = (
+            self.switch_fade_out_secs.clamp(FADE_SECS_MIN, FADE_SECS_MAX),
+            self.switch_fade_in_secs.clamp(FADE_SECS_MIN, FADE_SECS_MAX),
+        );
         match self.crt_phase {
             CrtPhase::Out(t) => {
-                let nt = t + dt / CRT_OUT_SECS;
+                let nt = t + dt / out_secs;
                 if nt >= 1.0 {
                     self.finish_crt_out();
                 } else {
@@ -629,7 +706,7 @@ impl LiveVisualizerApp {
                 }
             }
             CrtPhase::In(t) => {
-                let nt = t + dt / CRT_IN_SECS;
+                let nt = t + dt / in_secs;
                 if nt >= 1.0 {
                     self.crt_phase = CrtPhase::Idle;
                 } else {
@@ -678,6 +755,8 @@ impl LiveVisualizerApp {
             return;
         }
         self.shutting_down = true;
+        // Stop looping video decode before tearing down GPU / audio.
+        self.background = None;
         // Release audio device BEFORE tearing down GPU / egui (fixes "can't relaunch")
         self.capture.stop();
         self.settings.tuning = self.analyzer.tuning.clone();
@@ -721,6 +800,11 @@ impl LiveVisualizerApp {
             self.frame_count = 0;
             self.fps_timer = now;
         }
+
+        self.usage.tick();
+        let usage = self.usage.snapshot();
+        self.timing.cpu_percent = usage.cpu_percent;
+        self.timing.gpu_percent = usage.gpu_percent;
 
         self.tick_logo_motion(dt);
         self.tick_logo_cycle(dt);

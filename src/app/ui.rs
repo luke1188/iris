@@ -3,8 +3,8 @@
 use super::media::{cover_rect, fit_rect};
 use super::state::LiveVisualizerApp;
 use crate::config::{
-    BarCap, BeatSettings, ColorMode, ColorSettings, LogoMotion, RgbColor, ScopeColorMode,
-    SpectrumLayout, SpectrumStyle, CENTER_SCOPE_ID, CENTER_SPECTRUM_ID,
+    BarCap, BeatSettings, ColorMode, ColorSettings, LogoMotion, LogoTransition, RgbColor,
+    ScopeColorMode, SpectrumLayout, SpectrumStyle, CENTER_SCOPE_ID, CENTER_SPECTRUM_ID,
 };
 use egui::epaint::Mesh;
 use egui::{self, Color32, Pos2, RichText, Sense, Shape, Stroke};
@@ -46,8 +46,8 @@ pub fn draw_settings_contents(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     }
 
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        for (i, label) in ["Live", "Look", "Tune", "More"].iter().enumerate() {
+    ui.horizontal_wrapped(|ui| {
+        for (i, label) in ["Live", "Logo", "Bg", "Look", "Tune", "More"].iter().enumerate() {
             let selected = app.controls_tab == i;
             if ui
                 .selectable_label(selected, RichText::new(*label).strong())
@@ -72,14 +72,18 @@ pub fn draw_settings_contents(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                     draw_beat_section(ui, app);
                 }
                 1 => {
-                    section_hint(ui, "Logo, background, and spectrum look");
+                    section_hint(ui, "Playlist, transitions, and the center icon");
                     draw_logo_section(ui, app);
-                    ui.add_space(8.0);
-                    draw_background_section(ui, app);
-                    ui.add_space(8.0);
-                    draw_visualizer_section(ui, app);
                 }
                 2 => {
+                    section_hint(ui, "Stage backdrop — image or looping video");
+                    draw_background_section(ui, app);
+                }
+                3 => {
+                    section_hint(ui, "Spectrum ring around the disc");
+                    draw_visualizer_section(ui, app);
+                }
+                4 => {
                     section_hint(ui, "Gain & band balance for the room");
                     draw_tuning_section(ui, app);
                 }
@@ -750,7 +754,7 @@ fn draw_particles_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
 fn draw_background_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Background", true, |ui| {
         ui.horizontal(|ui| {
-            if ui.button("Choose image…").clicked() {
+            if ui.button("Choose image or video…").clicked() {
                 app.pick_background(ui.ctx());
             }
             if ui.button("Clear").clicked() {
@@ -763,12 +767,24 @@ fn draw_background_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                     .small()
                     .color(Color32::GRAY),
             );
+        } else {
+            ui.label(
+                RichText::new("PNG/JPEG/SVG or H.264 MP4 (loops, no sound)")
+                    .small()
+                    .color(Color32::GRAY),
+            );
         }
         let mut changed = false;
         {
             let s = &mut app.settings.stage;
             changed |= slider(ui, "Brightness", &mut s.background_brightness, 0.1..=1.5).changed();
-            changed |= slider(ui, "Darkness", &mut s.background_darkness, 0.0..=0.95).changed();
+            changed |= ui
+                .checkbox(&mut s.background_overlay, "Dark overlay")
+                .on_hover_text("Black wash over the background. Turn off to keep original colors.")
+                .changed();
+            ui.add_enabled_ui(s.background_overlay, |ui| {
+                changed |= slider(ui, "Darkness", &mut s.background_darkness, 0.0..=0.95).changed();
+            });
             changed |= slider(ui, "Zoom", &mut s.background_zoom, 0.8..=1.6).changed();
             changed |= slider(ui, "Pan X", &mut s.background_pan_x, -1.0..=1.0).changed();
             changed |= slider(ui, "Pan Y", &mut s.background_pan_y, -1.0..=1.0).changed();
@@ -779,8 +795,42 @@ fn draw_background_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     });
 }
 
+fn logo_transition_label(t: LogoTransition) -> &'static str {
+    match t {
+        LogoTransition::Cut => "Cut",
+        LogoTransition::Glitch => "Glitch",
+        LogoTransition::Crt => "CRT wipe",
+        LogoTransition::ShrinkFade => "Shrink & fade",
+    }
+}
+
+fn logo_transition_combo(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash,
+    value: &mut LogoTransition,
+) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_id_source(id)
+        .selected_text(logo_transition_label(*value))
+        .width(120.0)
+        .show_ui(ui, |ui| {
+            for mode in [
+                LogoTransition::Cut,
+                LogoTransition::Glitch,
+                LogoTransition::Crt,
+                LogoTransition::ShrinkFade,
+            ] {
+                changed |= ui
+                    .selectable_value(value, mode, logo_transition_label(mode))
+                    .changed();
+            }
+        });
+    changed
+}
+
 fn draw_logo_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
-    section_frame(ui, "Center logo", true, |ui| {
+    let mut changed = false;
+    section_frame(ui, "Playlist", true, |ui| {
         ui.horizontal_wrapped(|ui| {
             if ui.button("Add logo…").clicked() {
                 app.pick_logo(ui.ctx());
@@ -807,262 +857,306 @@ fn draw_logo_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
             }
         });
 
-        if !app.settings.logo_paths.is_empty() {
-            ui.add_space(4.0);
-            let paths = app.settings.logo_paths.clone();
-            let active = app.logo_index;
-            for (i, path) in paths.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    let selected = i == active;
-                    let label = if crate::config::is_center_effect(path) {
-                        crate::config::center_item_label(path)
-                    } else {
-                        truncate_path(path, 34)
-                    };
-                    if ui.selectable_label(selected, label).clicked() {
-                        app.select_logo(i);
-                    }
-                    if ui.small_button("✕").clicked() {
-                        app.remove_logo_at(i);
-                    }
-                });
-            }
-            if paths.len() > 1 {
-                let status = if app.settings.stage.logo_autoplay {
-                    format!(
-                        "Autoplay · {} items · next in {:.0}s",
-                        paths.len(),
-                        app.logo_hold_left.max(0.0)
-                    )
-                } else {
-                    format!("{} items · pinned (enable Autoplay to rotate)", paths.len())
-                };
-                ui.label(RichText::new(status).small().color(Color32::GRAY));
-            }
-        }
-
         let playlist_len = app.playlist_len();
-        let (mut changed, resume_hold) = {
-            let mut changed = false;
+        ui.add_space(6.0);
+        let resume_hold = {
             let s = &mut app.settings.stage;
-            ui.add_space(4.0);
-            ui.label(RichText::new("Oscilloscope look").small().strong());
-            changed |= slider(ui, "Scope gain", &mut s.scope_gain, 0.2..=3.0).changed();
-            changed |=
-                slider(ui, "Scope thickness", &mut s.scope_thickness, 0.8..=5.0).changed();
-            ui.horizontal_wrapped(|ui| {
-                for (mode, label) in [
-                    (ScopeColorMode::Solid, "Solid"),
-                    (ScopeColorMode::Rainbow, "Rainbow"),
-                    (ScopeColorMode::Gradient, "Gradient"),
-                    (ScopeColorMode::Cycle, "Cycle"),
-                ] {
-                    changed |= ui
-                        .selectable_value(&mut s.scope_color_mode, mode, label)
-                        .changed();
-                }
-            });
-            match s.scope_color_mode {
-                ScopeColorMode::Solid => {
-                    changed |= color_picker_row(ui, "Scope color", &mut s.scope_color);
-                }
-                ScopeColorMode::Gradient => {
-                    changed |= color_picker_row(ui, "Scope A", &mut s.scope_color);
-                    changed |= color_picker_row(ui, "Scope B", &mut s.scope_color_b);
-                }
-                ScopeColorMode::Cycle => {
-                    changed |=
-                        slider(ui, "Scope cycle", &mut s.scope_cycle_speed, 0.02..=1.5).changed();
-                }
-                ScopeColorMode::Rainbow => {}
-            }
-
-            ui.add_space(6.0);
-            ui.label(RichText::new("Spectrum look").small().strong());
-            changed |= slider(ui, "Spec gain", &mut s.spectrum_gain, 0.2..=3.0).changed();
-            changed |=
-                slider(ui, "Spec thickness", &mut s.spectrum_thickness, 0.8..=5.0).changed();
-            ui.horizontal_wrapped(|ui| {
-                for (mode, label) in [
-                    (ScopeColorMode::Solid, "Solid"),
-                    (ScopeColorMode::Rainbow, "Rainbow"),
-                    (ScopeColorMode::Gradient, "Gradient"),
-                    (ScopeColorMode::Cycle, "Cycle"),
-                ] {
-                    changed |= ui
-                        .selectable_value(&mut s.spectrum_color_mode, mode, label)
-                        .changed();
-                }
-            });
-            match s.spectrum_color_mode {
-                ScopeColorMode::Solid => {
-                    changed |= color_picker_row(ui, "Spec color", &mut s.spectrum_color);
-                }
-                ScopeColorMode::Gradient => {
-                    changed |= color_picker_row(ui, "Spec A", &mut s.spectrum_color);
-                    changed |= color_picker_row(ui, "Spec B", &mut s.spectrum_color_b);
-                }
-                ScopeColorMode::Cycle => {
-                    changed |= slider(ui, "Spec cycle", &mut s.spectrum_cycle_speed, 0.02..=1.5)
-                        .changed();
-                }
-                ScopeColorMode::Rainbow => {}
-            }
-
-            ui.add_space(4.0);
-            ui.label(RichText::new("Shared").small().strong());
-            changed |= slider(ui, "Disc size", &mut s.disc_radius, 0.06..=0.35).changed();
-            changed |= color_picker_row(ui, "Disc color", &mut s.disc_color);
-            changed |= ui.checkbox(&mut s.disc_ticks, "Disc tick marks").changed();
-
-            ui.add_space(4.0);
-            ui.label(RichText::new("Playlist").small().strong());
             let was_auto = s.logo_autoplay;
-            changed |= ui
-                .checkbox(&mut s.logo_autoplay, "Autoplay")
-                .on_hover_text("Rotate through playlist items. Selecting one turns this off.")
-                .changed();
-            let resume_autoplay = s.logo_autoplay && !was_auto;
-            if playlist_len > 1 {
-                changed |= slider(ui, "Default hold", &mut s.logo_hold_secs, 2.0..=30.0)
-                    .on_hover_text("Seconds each item stays when Autoplay is on")
+            ui.horizontal(|ui| {
+                changed |= ui
+                    .checkbox(&mut s.logo_autoplay, "Autoplay")
+                    .on_hover_text("Rotate through playlist items. Clicking one pins it.")
                     .changed();
-            }
-            let resume_hold = if resume_autoplay {
+            });
+            let resume_hold = if s.logo_autoplay && !was_auto {
                 Some(s.logo_hold_secs.max(1.0))
             } else {
                 None
             };
-
-            ui.add_space(4.0);
-            ui.label(RichText::new("Transitions").small().strong());
-            changed |= ui
-                .checkbox(&mut s.crt_transition, "CRT effect wipe")
-                .on_hover_text(
-                    "TV turn-off style when switching to/from Scope or Spectrum (flatten → line → center)",
-                )
-                .changed();
-            changed |= ui
-                .checkbox(&mut s.logo_glitch, "Glitch transition")
-                .on_hover_text("RGB tear for image switches (when CRT wipe is not used)")
-                .changed();
-            if s.logo_glitch {
-                changed |= slider(ui, "Transition amount", &mut s.logo_glitch_amount, 0.2..=1.5)
+            if playlist_len > 1 {
+                changed |= slider(ui, "Default hold", &mut s.logo_hold_secs, 2.0..=30.0)
+                    .on_hover_text("Seconds each item stays unless it has its own hold")
                     .changed();
             }
-
-            ui.add_space(4.0);
-            ui.label(RichText::new("Beat glitch").small().strong());
-            changed |= ui
-                .checkbox(&mut s.logo_glitch_on_beat, "Glitch on beat")
-                .on_hover_text("Short glitch pulse on kicks — independent of logo transitions")
-                .changed();
-            if s.logo_glitch_on_beat {
-                changed |=
-                    slider(ui, "Beat amount", &mut s.logo_beat_glitch_amount, 0.2..=1.5).changed();
+            ui.label(RichText::new("New items enter with").small().color(Color32::GRAY));
+            changed |= logo_transition_combo(ui, "default_enter", &mut s.logo_transition);
+            if s.logo_transition.uses_timeline() {
+                changed |= fade_secs_slider(
+                    ui,
+                    "Fade out",
+                    &mut s.logo_fade_out_secs,
+                    "How fast the previous item leaves. Lower is faster.",
+                );
+                changed |= fade_secs_slider(
+                    ui,
+                    "Fade in",
+                    &mut s.logo_fade_in_secs,
+                    "How fast the next item appears. Lower is faster.",
+                );
             }
-            (changed, resume_hold)
+            resume_hold
         };
         if let Some(hold) = resume_hold {
             app.logo_hold_left = hold;
         }
 
-        if playlist_len > 0 {
-            let idx = app.logo_index.min(app.settings.logo_paths.len().saturating_sub(1));
-            app.settings.sync_logo_styles();
-            let active_path = app.settings.logo_paths.get(idx).cloned().unwrap_or_default();
-            let is_image = !crate::config::is_center_effect(&active_path);
-            ui.add_space(8.0);
+        if !app.settings.logo_paths.is_empty() {
+            ui.add_space(6.0);
             ui.label(
-                RichText::new(format!(
-                    "This item (#{}) — {}",
-                    idx + 1,
-                    crate::config::center_item_label(&active_path)
-                ))
-                .small()
-                .strong(),
+                RichText::new("Enter with — how this item appears")
+                    .small()
+                    .color(Color32::GRAY),
             );
-            {
-                let style = app.settings.logo_style_mut(idx);
-                if is_image {
-                    changed |= slider(ui, "Size", &mut style.size, 0.25..=1.0).changed();
-                    changed |= slider(ui, "Offset X", &mut style.offset_x, -0.45..=0.45).changed();
-                    changed |= slider(ui, "Offset Y", &mut style.offset_y, -0.45..=0.45).changed();
-                    ui.horizontal(|ui| {
-                        let step = 0.02_f32;
-                        if ui.button("←").clicked() {
-                            style.offset_x = (style.offset_x - step).max(-0.45);
-                            changed = true;
-                        }
-                        if ui.button("→").clicked() {
-                            style.offset_x = (style.offset_x + step).min(0.45);
-                            changed = true;
-                        }
-                        if ui.button("↑").clicked() {
-                            style.offset_y = (style.offset_y - step).max(-0.45);
-                            changed = true;
-                        }
-                        if ui.button("↓").clicked() {
-                            style.offset_y = (style.offset_y + step).min(0.45);
-                            changed = true;
-                        }
-                        if ui.button("Center").clicked() {
-                            style.offset_x = 0.0;
-                            style.offset_y = 0.0;
-                            changed = true;
-                        }
-                    });
-
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("Motion").small().strong());
-                    ui.horizontal_wrapped(|ui| {
-                        for (mode, label) in [
-                            (LogoMotion::None, "None"),
-                            (LogoMotion::Spin, "Spin"),
-                            (LogoMotion::BeatSpin, "Beat spin"),
-                            (LogoMotion::Wobble, "Wobble"),
-                            (LogoMotion::Pendulum, "Pendulum"),
-                        ] {
-                            if ui.selectable_value(&mut style.motion, mode, label).changed() {
-                                changed = true;
-                            }
-                        }
-                    });
-                    if style.motion != LogoMotion::None {
-                        changed |= slider(ui, "Speed", &mut style.spin_speed, 0.02..=1.5).changed();
-                        if matches!(style.motion, LogoMotion::Wobble | LogoMotion::Pendulum) {
-                            changed |=
-                                slider(ui, "Amount", &mut style.motion_amount, 0.05..=1.0).changed();
-                        }
+            app.settings.sync_logo_styles();
+            let paths = app.settings.logo_paths.clone();
+            let active = app.logo_index;
+            let mut remove_at = None;
+            for (i, path) in paths.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let selected = i == active;
+                    let name = if crate::config::is_center_effect(path) {
+                        crate::config::center_item_label(path)
+                    } else {
+                        truncate_path(path, 22)
+                    };
+                    let label = format!("{}. {name}", i + 1);
+                    if ui
+                        .selectable_label(selected, label)
+                        .on_hover_text("Show this item")
+                        .clicked()
+                    {
+                        app.select_logo(i);
                     }
-
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("Look").small().strong());
-                    changed |= color_picker_tint(ui, "Tint", style);
-                    changed |= slider(ui, "Brightness", &mut style.brightness, 0.2..=1.8).changed();
-                    changed |= slider(ui, "Opacity", &mut style.opacity, 0.15..=1.0).changed();
-                    if ui.small_button("Reset tint").clicked() {
-                        set_style_tint(style, 1.0, 1.0, 1.0, 1.0);
+                    let style = app.settings.logo_style_mut(i);
+                    if logo_transition_combo(ui, ("enter", i), &mut style.transition) {
                         changed = true;
                     }
-                }
+                    if ui.small_button("✕").clicked() {
+                        remove_at = Some(i);
+                    }
+                });
+            }
+            if let Some(i) = remove_at {
+                app.remove_logo_at(i);
+                changed = true;
+            }
+            if paths.len() > 1 {
+                let status = if app.settings.stage.logo_autoplay {
+                    format!(
+                        "{} items · next in {:.0}s",
+                        paths.len(),
+                        app.logo_hold_left.max(0.0)
+                    )
+                } else {
+                    format!("{} items · pinned", paths.len())
+                };
+                ui.label(RichText::new(status).small().color(Color32::GRAY));
+            }
+        }
+    });
 
+    let playlist_len = app.playlist_len();
+    if playlist_len > 0 {
+        let idx = app.logo_index.min(app.settings.logo_paths.len().saturating_sub(1));
+        app.settings.sync_logo_styles();
+        let active_path = app.settings.logo_paths.get(idx).cloned().unwrap_or_default();
+        let is_image = !crate::config::is_center_effect(&active_path);
+        let title = format!(
+            "Selected — {}",
+            crate::config::center_item_label(&active_path)
+        );
+        section_frame(ui, &title, true, |ui| {
+            let enter_kind = {
+                let style = app.settings.logo_style_mut(idx);
+                ui.label(RichText::new("Enter").small().strong());
+                ui.horizontal(|ui| {
+                    changed |=
+                        logo_transition_combo(ui, ("selected_enter", idx), &mut style.transition);
+                });
+                if style.transition.uses_timeline() {
+                    changed |= fade_secs_slider(
+                        ui,
+                        "Fade out",
+                        &mut style.fade_out_secs,
+                        "How fast the previous item leaves when this one comes in. Lower is faster.",
+                    );
+                    changed |= fade_secs_slider(
+                        ui,
+                        "Fade in",
+                        &mut style.fade_in_secs,
+                        "How fast this item appears. Lower is faster.",
+                    );
+                }
                 if playlist_len > 1 {
-                    ui.add_space(4.0);
                     changed |= slider(ui, "Hold (sec)", &mut style.hold_secs, 0.0..=30.0)
                         .on_hover_text("0 = use default hold")
                         .changed();
                 }
+                style.transition
+            };
+            if enter_kind == LogoTransition::Glitch {
+                changed |= slider(
+                    ui,
+                    "Glitch amount",
+                    &mut app.settings.stage.logo_glitch_amount,
+                    0.2..=1.5,
+                )
+                .changed();
+            }
+
+            if is_image {
+                ui.add_space(6.0);
+                ui.label(RichText::new("Look").small().strong());
+                let style = app.settings.logo_style_mut(idx);
+                changed |= slider(ui, "Size", &mut style.size, 0.25..=1.0).changed();
+                changed |= slider(ui, "Offset X", &mut style.offset_x, -0.45..=0.45).changed();
+                changed |= slider(ui, "Offset Y", &mut style.offset_y, -0.45..=0.45).changed();
+                ui.horizontal(|ui| {
+                    let step = 0.02_f32;
+                    if ui.button("←").clicked() {
+                        style.offset_x = (style.offset_x - step).max(-0.45);
+                        changed = true;
+                    }
+                    if ui.button("→").clicked() {
+                        style.offset_x = (style.offset_x + step).min(0.45);
+                        changed = true;
+                    }
+                    if ui.button("↑").clicked() {
+                        style.offset_y = (style.offset_y - step).max(-0.45);
+                        changed = true;
+                    }
+                    if ui.button("↓").clicked() {
+                        style.offset_y = (style.offset_y + step).min(0.45);
+                        changed = true;
+                    }
+                    if ui.button("Center").clicked() {
+                        style.offset_x = 0.0;
+                        style.offset_y = 0.0;
+                        changed = true;
+                    }
+                });
+
+                ui.add_space(4.0);
+                ui.label(RichText::new("Motion").small().strong());
+                ui.horizontal_wrapped(|ui| {
+                    for (mode, label) in [
+                        (LogoMotion::None, "None"),
+                        (LogoMotion::Spin, "Spin"),
+                        (LogoMotion::BeatSpin, "Beat spin"),
+                        (LogoMotion::Wobble, "Wobble"),
+                        (LogoMotion::Pendulum, "Pendulum"),
+                    ] {
+                        if ui.selectable_value(&mut style.motion, mode, label).changed() {
+                            changed = true;
+                        }
+                    }
+                });
+                if style.motion != LogoMotion::None {
+                    changed |= slider(ui, "Speed", &mut style.spin_speed, 0.02..=1.5).changed();
+                    if matches!(style.motion, LogoMotion::Wobble | LogoMotion::Pendulum) {
+                        changed |=
+                            slider(ui, "Amount", &mut style.motion_amount, 0.05..=1.0).changed();
+                    }
+                }
+
+                ui.add_space(4.0);
+                changed |= color_picker_tint(ui, "Tint", style);
+                changed |= slider(ui, "Brightness", &mut style.brightness, 0.2..=1.8).changed();
+                changed |= slider(ui, "Opacity", &mut style.opacity, 0.15..=1.0).changed();
+                if ui.small_button("Reset tint").clicked() {
+                    set_style_tint(style, 1.0, 1.0, 1.0, 1.0);
+                    changed = true;
+                }
+            }
+
+            let style = app.settings.logo_style_mut(idx);
+            changed |= ui
+                .checkbox(&mut style.glitch_on_beat, "Beat glitch (this item)")
+                .changed();
+        });
+    }
+
+    section_frame(ui, "Center disc", false, |ui| {
+        let s = &mut app.settings.stage;
+        changed |= slider(ui, "Disc size", &mut s.disc_radius, 0.06..=0.35).changed();
+        changed |= color_picker_row(ui, "Disc color", &mut s.disc_color);
+        changed |= ui.checkbox(&mut s.disc_ticks, "Disc tick marks").changed();
+
+        ui.add_space(6.0);
+        ui.label(RichText::new("Oscilloscope").small().strong());
+        changed |= slider(ui, "Scope gain", &mut s.scope_gain, 0.2..=3.0).changed();
+        changed |= slider(ui, "Scope thickness", &mut s.scope_thickness, 0.8..=5.0).changed();
+        ui.horizontal_wrapped(|ui| {
+            for (mode, label) in [
+                (ScopeColorMode::Solid, "Solid"),
+                (ScopeColorMode::Rainbow, "Rainbow"),
+                (ScopeColorMode::Gradient, "Gradient"),
+                (ScopeColorMode::Cycle, "Cycle"),
+            ] {
                 changed |= ui
-                    .checkbox(&mut style.glitch_on_beat, "Beat glitch (this item)")
+                    .selectable_value(&mut s.scope_color_mode, mode, label)
                     .changed();
             }
+        });
+        match s.scope_color_mode {
+            ScopeColorMode::Solid => {
+                changed |= color_picker_row(ui, "Scope color", &mut s.scope_color);
+            }
+            ScopeColorMode::Gradient => {
+                changed |= color_picker_row(ui, "Scope A", &mut s.scope_color);
+                changed |= color_picker_row(ui, "Scope B", &mut s.scope_color_b);
+            }
+            ScopeColorMode::Cycle => {
+                changed |= slider(ui, "Scope cycle", &mut s.scope_cycle_speed, 0.02..=1.5).changed();
+            }
+            ScopeColorMode::Rainbow => {}
         }
 
-        if changed {
-            app.mark_settings_dirty();
+        ui.add_space(6.0);
+        ui.label(RichText::new("Center spectrum").small().strong());
+        changed |= slider(ui, "Spec gain", &mut s.spectrum_gain, 0.2..=3.0).changed();
+        changed |= slider(ui, "Spec thickness", &mut s.spectrum_thickness, 0.8..=5.0).changed();
+        ui.horizontal_wrapped(|ui| {
+            for (mode, label) in [
+                (ScopeColorMode::Solid, "Solid"),
+                (ScopeColorMode::Rainbow, "Rainbow"),
+                (ScopeColorMode::Gradient, "Gradient"),
+                (ScopeColorMode::Cycle, "Cycle"),
+            ] {
+                changed |= ui
+                    .selectable_value(&mut s.spectrum_color_mode, mode, label)
+                    .changed();
+            }
+        });
+        match s.spectrum_color_mode {
+            ScopeColorMode::Solid => {
+                changed |= color_picker_row(ui, "Spec color", &mut s.spectrum_color);
+            }
+            ScopeColorMode::Gradient => {
+                changed |= color_picker_row(ui, "Spec A", &mut s.spectrum_color);
+                changed |= color_picker_row(ui, "Spec B", &mut s.spectrum_color_b);
+            }
+            ScopeColorMode::Cycle => {
+                changed |= slider(ui, "Spec cycle", &mut s.spectrum_cycle_speed, 0.02..=1.5).changed();
+            }
+            ScopeColorMode::Rainbow => {}
         }
     });
+
+    section_frame(ui, "Beat glitch", false, |ui| {
+        let s = &mut app.settings.stage;
+        changed |= ui
+            .checkbox(&mut s.logo_glitch_on_beat, "Glitch on beat")
+            .on_hover_text("Short glitch pulse on kicks — independent of logo enter transitions")
+            .changed();
+        if s.logo_glitch_on_beat {
+            changed |= slider(ui, "Beat amount", &mut s.logo_beat_glitch_amount, 0.2..=1.5).changed();
+        }
+    });
+
+    if changed {
+        app.mark_settings_dirty();
+    }
 }
 
 fn set_style_tint(s: &mut crate::config::LogoStyle, r: f32, g: f32, b: f32, bright: f32) {
@@ -1086,7 +1180,7 @@ fn logo_style_tint(s: &crate::config::LogoStyle) -> Color32 {
 
 fn draw_display_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Display", true, |ui| {
-        ui.checkbox(&mut app.show_debug, "Show FPS overlay");
+        ui.checkbox(&mut app.show_debug, "Show debug overlay");
         if ui
             .checkbox(&mut app.settings_popout, "Pop out this window")
             .changed()
@@ -1102,6 +1196,21 @@ fn draw_display_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
             crate::display::toggle_fullscreen(ui.ctx(), app.fullscreen);
         }
     });
+}
+
+fn fade_secs_slider(ui: &mut egui::Ui, label: &str, value: &mut f32, hover: &str) -> bool {
+    ui.horizontal(|ui| {
+        ui.add_sized([110.0, 18.0], egui::Label::new(label));
+        ui.add(
+            egui::Slider::new(value, 0.05..=2.0)
+                .suffix(" s")
+                .logarithmic(true)
+                .min_decimals(2),
+        )
+        .on_hover_text(hover)
+    })
+    .inner
+    .changed()
 }
 
 fn slider(
@@ -1199,23 +1308,26 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
 
     painter.rect_filled(rect, 0.0, Color32::from_rgb(8, 8, 12));
 
-    if let Some(ref bg) = app.background {
+    if let Some(ref mut bg) = app.background {
+        bg.sync();
         let img_rect = cover_rect(
             rect,
-            bg.size,
+            bg.size(),
             stage.background_zoom,
             stage.background_pan_x,
             stage.background_pan_y,
         );
         let bright = (stage.background_brightness * 255.0).clamp(0.0, 255.0) as u8;
         painter.image(
-            bg.texture.id(),
+            bg.texture().id(),
             img_rect,
             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
             Color32::from_rgb(bright, bright, bright),
         );
-        let dark_a = (stage.background_darkness * 255.0).clamp(0.0, 255.0) as u8;
-        painter.rect_filled(rect, 0.0, Color32::from_black_alpha(dark_a));
+        if stage.background_overlay {
+            let dark_a = (stage.background_darkness * 255.0).clamp(0.0, 255.0) as u8;
+            painter.rect_filled(rect, 0.0, Color32::from_black_alpha(dark_a));
+        }
     }
 
     let min_dim = rect.height().min(rect.width());
@@ -1276,7 +1388,8 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
     let dt = (app.timing.frame_ms / 1000.0).clamp(1.0 / 240.0, 1.0 / 20.0);
     if app.playlist_len() > 0 {
         use crate::app::state::CrtPhase;
-        let (sx, sy, alpha) = app.crt_phase.factors();
+        let kind = app.switch_transition;
+        let (sx, sy, alpha) = app.crt_phase.factors(kind);
         let draw_idx = match app.crt_phase {
             CrtPhase::Out(_) => app.logo_from_index.min(app.playlist_len() - 1),
             _ => app.logo_index.min(app.playlist_len() - 1),
@@ -1297,7 +1410,7 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
             alpha,
         );
         // Bright CRT scanline while flattened.
-        if app.crt_phase.is_busy() && sy < 0.12 {
+        if kind == crate::config::LogoTransition::Crt && app.crt_phase.is_busy() && sy < 0.12 {
             let line_w = disc_r * 2.0 * sx.clamp(0.04, 1.0);
             let glow = ((1.0 - sy / 0.12) * 200.0) as u8;
             painter.line_segment(
@@ -1326,10 +1439,16 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
     }
 
     if show_debug {
+        let gpu = timing
+            .gpu_percent
+            .map(|g| format!("{g:.0}%"))
+            .unwrap_or_else(|| "n/a".into());
         let text = format!(
-            "{:.0} FPS  |  {:.1} ms  |  bass {:.2}  |  particles {}",
+            "{:.0} FPS  |  {:.1} ms  |  CPU {:.0}%  |  GPU {}  |  bass {:.2}  |  particles {}",
             timing.fps,
             timing.frame_ms,
+            timing.cpu_percent,
+            gpu,
             features.bass,
             if particles_on { "on" } else { "off" }
         );

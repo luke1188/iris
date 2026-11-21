@@ -3,5 +3,7 @@
 mod media;
 mod state;
 mod ui;
+mod usage;
+mod video;
 
 pub use state::LiveVisualizerApp;

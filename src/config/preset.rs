@@ -103,6 +103,27 @@ pub fn center_item_label(path: &str) -> String {
     }
 }
 
+/// How playlist items switch (logos, scope, spectrum).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LogoTransition {
+    /// Instant swap.
+    Cut,
+    /// RGB tear on image switches.
+    #[default]
+    Glitch,
+    /// TV turn-off: flatten → line → expand.
+    Crt,
+    /// Shrink + fade to black, then the next item fades in.
+    ShrinkFade,
+}
+
+impl LogoTransition {
+    pub fn uses_timeline(self) -> bool {
+        matches!(self, Self::Crt | Self::ShrinkFade)
+    }
+}
+
 /// Motion applied to the center logo / disc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -177,6 +198,15 @@ pub struct LogoStyle {
     /// Override hold time for this logo (0 = use playlist default).
     #[serde(default)]
     pub hold_secs: f32,
+    /// How this item enters when it becomes active.
+    #[serde(default)]
+    pub transition: LogoTransition,
+    /// How long this item takes to leave (Shrink & fade / CRT, seconds).
+    #[serde(default = "default_fade_out_secs")]
+    pub fade_out_secs: f32,
+    /// How long this item takes to appear (Shrink & fade / CRT, seconds).
+    #[serde(default = "default_fade_in_secs")]
+    pub fade_in_secs: f32,
     /// Fire a glitch burst when a kick/beat hits while this logo is up.
     #[serde(default = "default_true_stage")]
     pub glitch_on_beat: bool,
@@ -201,6 +231,9 @@ impl Default for LogoStyle {
             spin_speed: 0.15,
             motion_amount: 0.35,
             hold_secs: 0.0,
+            transition: LogoTransition::Glitch,
+            fade_out_secs: 0.40,
+            fade_in_secs: 0.55,
             glitch_on_beat: true,
         }
     }
@@ -221,6 +254,9 @@ impl LogoStyle {
             spin_speed: s.logo_spin_speed,
             motion_amount: s.logo_motion_amount,
             hold_secs: 0.0,
+            transition: s.logo_transition,
+            fade_out_secs: s.logo_fade_out_secs,
+            fade_in_secs: s.logo_fade_in_secs,
             glitch_on_beat: true,
         }
     }
@@ -230,6 +266,9 @@ impl LogoStyle {
 pub struct StageSettings {
     pub background_brightness: f32,
     pub background_darkness: f32,
+    /// Black wash over the background. Off keeps original image/video colors.
+    #[serde(default = "default_true_stage")]
+    pub background_overlay: bool,
     pub background_zoom: f32,
     pub background_pan_x: f32,
     pub background_pan_y: f32,
@@ -303,6 +342,15 @@ pub struct StageSettings {
     /// CRT-style flatten → line → center when switching to/from effects.
     #[serde(default = "default_true_stage")]
     pub crt_transition: bool,
+    /// Playlist switch animation used for newly added items.
+    #[serde(default)]
+    pub logo_transition: LogoTransition,
+    /// Default fade-out seconds for Shrink & fade / CRT on new items.
+    #[serde(default = "default_fade_out_secs")]
+    pub logo_fade_out_secs: f32,
+    /// Default fade-in seconds for Shrink & fade / CRT on new items.
+    #[serde(default = "default_fade_in_secs")]
+    pub logo_fade_in_secs: f32,
     /// Glitch burst when switching logos (transition).
     #[serde(default = "default_true_stage")]
     pub logo_glitch: bool,
@@ -329,6 +377,14 @@ fn default_motion_amount() -> f32 {
 
 fn default_logo_hold() -> f32 {
     8.0
+}
+
+fn default_fade_out_secs() -> f32 {
+    0.40
+}
+
+fn default_fade_in_secs() -> f32 {
+    0.55
 }
 
 fn default_true_stage() -> bool {
@@ -372,6 +428,7 @@ impl Default for StageSettings {
         Self {
             background_brightness: 0.85,
             background_darkness: 0.45,
+            background_overlay: true,
             background_zoom: 1.05,
             background_pan_x: 0.0,
             background_pan_y: 0.0,
@@ -407,6 +464,9 @@ impl Default for StageSettings {
             logo_hold_secs: 8.0,
             logo_autoplay: true,
             crt_transition: true,
+            logo_transition: LogoTransition::Glitch,
+            logo_fade_out_secs: 0.40,
+            logo_fade_in_secs: 0.55,
             logo_glitch: true,
             logo_glitch_amount: 1.0,
             logo_glitch_on_beat: true,

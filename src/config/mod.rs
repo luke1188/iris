@@ -10,8 +10,8 @@ pub use preset::{
     save_preset, factory_preset, is_locked_preset, FACTORY_PRESET_NAME,
     save_settings, settings_path, user_presets_dir, AppSettings, BarCap, BeatSettings,
     CENTER_SCOPE_ID, CENTER_SPECTRUM_ID, ColorMode, ColorSettings, LogoMotion, LogoStyle,
-    ParticleSettings, Preset, RgbColor, ScopeColorMode, SpectrumLayout, SpectrumStyle,
-    StageSettings, VisualizerSettings,
+    LogoTransition, ParticleSettings, Preset, RgbColor, ScopeColorMode, SpectrumLayout,
+    SpectrumStyle, StageSettings, VisualizerSettings,
 };
 
 pub use crate::audio::BeatMode;
