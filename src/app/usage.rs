@@ -250,22 +250,23 @@ mod windows_gpu {
     use windows::core::w;
     use windows::Win32::System::Performance::{
         PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
-        PdhOpenQueryW, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY,
+        PdhOpenQueryW, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE,
     };
 
+    // windows 0.58 exposes PDH handles as raw `isize` (typed PDH_H* landed in later crates).
     pub struct Query {
-        query: PDH_HQUERY,
-        counter: PDH_HCOUNTER,
+        query: isize,
+        counter: isize,
     }
 
     impl Query {
         pub fn new() -> Option<Self> {
             unsafe {
-                let mut query = PDH_HQUERY::default();
+                let mut query: isize = 0;
                 if PdhOpenQueryW(None, 0, &mut query) != 0 {
                     return None;
                 }
-                let mut counter = PDH_HCOUNTER::default();
+                let mut counter: isize = 0;
                 let status = PdhAddEnglishCounterW(
                     query,
                     w!("\\GPU Engine(*)\\Utilization Percentage"),

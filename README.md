@@ -16,7 +16,19 @@ macOS / Linux can build for development; WASAPI loopback notes below apply to Wi
 cargo run --release
 ```
 
-CI builds **Windows x64** and **macOS Apple Silicon** portable zips on `main` / PRs (Actions artifacts). Tag `v*` for a GitHub Release.
+CI builds **Windows x64** and **macOS Apple Silicon** portable zips on `main` / PRs (Actions artifacts).
+
+### Making a release
+
+1. Commit what you want on `main` and push.
+2. Tag and push the tag (this triggers the Release job, which attaches the zips):
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Or in GitHub: **Releases → Draft a new release →** create tag `v0.1.0` on `main` → Publish. Same `v*` tag pattern fires the workflow.
 
 - **Windows:** unzip → run `iris_visualizer.exe`
 - **macOS (Apple Silicon):** unzip → run the `iris_visualizer` binary (no signed `.app` yet — Developer ID / notarization later). From Terminal:
