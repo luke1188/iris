@@ -3,8 +3,8 @@
 use crate::audio::{AudioCapture, AudioDeviceInfo, AudioFeatures, Analyzer};
 use crate::config::{
     list_user_presets, load_preset, load_settings, load_template, sanitize_preset_name,
-    save_preset, save_settings,
-    AppSettings, LogoMotion, LogoStyle, LogoTransition, StageSettings,
+    save_preset, save_settings, AppSettings, BannerItem, LogoMotion, LogoStyle, LogoTransition,
+    StageSettings,
 };
 use crate::display::{is_fullscreen, toggle_fullscreen};
 use crate::renderer::{ParticleSystem, RadialSpectrum};
@@ -110,6 +110,19 @@ impl CrtPhase {
     }
 }
 
+/// Slide / dwell cycle for stage advertisement banners.
+#[derive(Debug, Clone, Copy)]
+pub enum BannerPhase {
+    /// Waiting before the next slide-in.
+    Hidden { left: f32 },
+    /// `t` goes 0 → 1 while entering.
+    In { t: f32 },
+    /// Fully visible; `left` counts down unless always-on single card.
+    Shown { left: f32 },
+    /// `t` goes 0 → 1 while exiting.
+    Out { t: f32 },
+}
+
 pub struct LiveVisualizerApp {
     pub settings: AppSettings,
     pub capture: AudioCapture,
@@ -129,6 +142,12 @@ pub struct LiveVisualizerApp {
     pub background: Option<StageBackground>,
     /// Parallel to `settings.logo_paths` — `None` for Scope/Spectrum effect slots.
     pub logos: Vec<Option<LoadedTexture>>,
+    /// Parallel to `settings.banners.items` — textures for optional QR / art.
+    pub banner_textures: Vec<Option<LoadedTexture>>,
+    pub banner_index: usize,
+    pub banner_phase: BannerPhase,
+    /// Selected banner row in the Ads settings UI.
+    pub banner_edit_index: usize,
     pub logo_index: usize,
     pub logo_from_index: usize,
     /// Hold countdown until next logo (seconds).
@@ -241,6 +260,10 @@ impl LiveVisualizerApp {
             status_message: None,
             background: None,
             logos: Vec::new(),
+            banner_textures: Vec::new(),
+            banner_index: 0,
+            banner_phase: BannerPhase::Hidden { left: 0.8 },
+            banner_edit_index: 0,
             logo_index: 0,
             logo_from_index: 0,
             logo_hold_left: 8.0,
@@ -296,6 +319,15 @@ impl LiveVisualizerApp {
             app.logo_index = 0;
             app.logo_hold_left = app.settings.stage.logo_hold_secs.max(1.0);
         }
+        app.restore_banner_textures(&cc.egui_ctx);
+        if app.settings.banners.enabled && !app.settings.banners.items.is_empty() {
+            let gap = if app.settings.banners.always_on {
+                0.2
+            } else {
+                1.0
+            };
+            app.banner_phase = BannerPhase::Hidden { left: gap };
+        }
 
         app
     }
@@ -340,6 +372,11 @@ impl LiveVisualizerApp {
         self.preset_dirty = true;
         self.pending_preset_load = None;
         self.settings.tuning = self.analyzer.tuning.clone();
+    }
+
+    /// Session-only dirty (ads, device) — does not mark the look preset edited.
+    pub fn mark_session_dirty(&mut self) {
+        self.settings_dirty = true;
     }
 
     pub fn apply_tuning_from_ui(&mut self) {
@@ -456,6 +493,206 @@ impl LiveVisualizerApp {
 
     pub fn refresh_presets(&mut self) {
         self.preset_names = list_user_presets();
+    }
+
+    pub fn restore_banner_textures(&mut self, ctx: &egui::Context) {
+        self.banner_textures.clear();
+        let paths: Vec<Option<String>> = self
+            .settings
+            .banners
+            .items
+            .iter()
+            .map(|i| i.image_path.clone())
+            .collect();
+        for (i, path) in paths.into_iter().enumerate() {
+            match path {
+                Some(p) if !p.is_empty() => {
+                    match media::load_texture_from_path(ctx, PathBuf::from(&p).as_path(), &format!("banner_{i}"))
+                    {
+                        Ok(tex) => self.banner_textures.push(Some(tex)),
+                        Err(e) => {
+                            log::warn!("Could not restore banner image {p}: {e}");
+                            self.banner_textures.push(None);
+                        }
+                    }
+                }
+                _ => self.banner_textures.push(None),
+            }
+        }
+        if self.banner_edit_index >= self.settings.banners.items.len() {
+            self.banner_edit_index = self.settings.banners.items.len().saturating_sub(1);
+        }
+        if self.banner_index >= self.settings.banners.items.len() {
+            self.banner_index = 0;
+        }
+    }
+
+    pub fn add_banner(&mut self) {
+        self.settings.banners.items.push(BannerItem::default());
+        self.banner_textures.push(None);
+        self.banner_edit_index = self.settings.banners.items.len().saturating_sub(1);
+        if self.settings.banners.enabled && matches!(self.banner_phase, BannerPhase::Hidden { .. }) {
+            self.banner_phase = BannerPhase::Hidden { left: 0.35 };
+        }
+        self.mark_session_dirty();
+    }
+
+    pub fn remove_banner_at(&mut self, index: usize) {
+        if index >= self.settings.banners.items.len() {
+            return;
+        }
+        self.settings.banners.items.remove(index);
+        if index < self.banner_textures.len() {
+            self.banner_textures.remove(index);
+        }
+        if self.banner_edit_index >= self.settings.banners.items.len() {
+            self.banner_edit_index = self.settings.banners.items.len().saturating_sub(1);
+        }
+        if self.banner_index >= self.settings.banners.items.len() {
+            self.banner_index = 0;
+        }
+        if self.settings.banners.items.is_empty() {
+            self.banner_phase = BannerPhase::Hidden { left: 1.0 };
+        }
+        self.mark_session_dirty();
+    }
+
+    pub fn pick_banner_image(&mut self, ctx: &egui::Context, index: usize) {
+        if index >= self.settings.banners.items.len() {
+            return;
+        }
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "svg", "svgz"])
+            .set_title("Banner image (QR / logo)")
+            .pick_file()
+        {
+            let name = format!("banner_{index}");
+            match media::load_texture_from_path(ctx, &path, &name) {
+                Ok(tex) => {
+                    while self.banner_textures.len() <= index {
+                        self.banner_textures.push(None);
+                    }
+                    self.banner_textures[index] = Some(tex);
+                    self.settings.banners.items[index].image_path =
+                        Some(path.display().to_string());
+                    self.mark_session_dirty();
+                    self.error_message = None;
+                    self.status_message = Some("Banner image loaded".into());
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Banner image failed: {e}"));
+                }
+            }
+        }
+    }
+
+    pub fn clear_banner_image(&mut self, index: usize) {
+        if index >= self.settings.banners.items.len() {
+            return;
+        }
+        self.settings.banners.items[index].image_path = None;
+        if index < self.banner_textures.len() {
+            self.banner_textures[index] = None;
+        }
+        self.mark_session_dirty();
+    }
+
+    /// Progress through hide → slide in → dwell → slide out → next.
+    pub fn tick_banners(&mut self, dt: f32) {
+        let cfg = &self.settings.banners;
+        if !cfg.enabled || cfg.items.is_empty() {
+            return;
+        }
+        let n = cfg.items.len();
+        let slide = cfg.slide_secs.clamp(0.15, 2.5);
+        let hold = cfg.hold_secs.clamp(1.0, 300.0);
+        let gap = cfg.gap_secs.clamp(0.0, 600.0);
+        let always = cfg.always_on;
+
+        match self.banner_phase {
+            BannerPhase::Hidden { left } => {
+                let left = left - dt;
+                if left <= 0.0 {
+                    if self.banner_index >= n {
+                        self.banner_index = 0;
+                    }
+                    self.banner_phase = BannerPhase::In { t: 0.0 };
+                } else {
+                    self.banner_phase = BannerPhase::Hidden { left };
+                }
+            }
+            BannerPhase::In { t } => {
+                let t = (t + dt / slide).min(1.0);
+                if t >= 1.0 {
+                    let left = if always && n == 1 {
+                        f32::INFINITY
+                    } else {
+                        hold
+                    };
+                    self.banner_phase = BannerPhase::Shown { left };
+                } else {
+                    self.banner_phase = BannerPhase::In { t };
+                }
+            }
+            BannerPhase::Shown { left } => {
+                if !left.is_finite() {
+                    return;
+                }
+                let left = left - dt;
+                if left <= 0.0 {
+                    if always && n == 1 {
+                        self.banner_phase = BannerPhase::Shown {
+                            left: f32::INFINITY,
+                        };
+                    } else if always && n > 1 {
+                        // Cross to the next card without a long gap.
+                        self.banner_phase = BannerPhase::Out { t: 0.0 };
+                    } else {
+                        self.banner_phase = BannerPhase::Out { t: 0.0 };
+                    }
+                } else {
+                    self.banner_phase = BannerPhase::Shown { left };
+                }
+            }
+            BannerPhase::Out { t } => {
+                let t = (t + dt / slide).min(1.0);
+                if t >= 1.0 {
+                    self.banner_index = (self.banner_index + 1) % n;
+                    if always {
+                        self.banner_phase = BannerPhase::In { t: 0.0 };
+                    } else {
+                        self.banner_phase = BannerPhase::Hidden {
+                            left: gap.max(0.05),
+                        };
+                    }
+                } else {
+                    self.banner_phase = BannerPhase::Out { t };
+                }
+            }
+        }
+    }
+
+    /// 0 = fully off-screen, 1 = parked. Also whether we should paint.
+    pub fn banner_slide_amount(&self) -> Option<(usize, f32)> {
+        let cfg = &self.settings.banners;
+        if !cfg.enabled || cfg.items.is_empty() {
+            return None;
+        }
+        let idx = self.banner_index.min(cfg.items.len() - 1);
+        let amount = match self.banner_phase {
+            BannerPhase::Hidden { .. } => return None,
+            BannerPhase::In { t } => {
+                let u = t.clamp(0.0, 1.0);
+                u * u * (3.0 - 2.0 * u)
+            }
+            BannerPhase::Shown { .. } => 1.0,
+            BannerPhase::Out { t } => {
+                let u = t.clamp(0.0, 1.0);
+                let e = u * u * (3.0 - 2.0 * u);
+                1.0 - e
+            }
+        };
+        Some((idx, amount))
     }
 
     pub fn pick_background(&mut self, ctx: &egui::Context) {
@@ -831,6 +1068,7 @@ impl LiveVisualizerApp {
 
         self.tick_logo_motion(dt);
         self.tick_logo_cycle(dt);
+        self.tick_banners(dt);
 
         if self.settings_dirty && self.save_timer.elapsed().as_secs_f32() > 1.0 {
             self.settings.tuning = self.analyzer.tuning.clone();

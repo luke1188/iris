@@ -4,8 +4,9 @@ use super::media::{cover_rect, fit_rect};
 use super::state::LiveVisualizerApp;
 use crate::audio::BeatMode;
 use crate::config::{
-    BarCap, BeatSettings, ColorMode, ColorSettings, LogoMotion, LogoTransition, RgbColor,
-    ScopeColorMode, SpectrumLayout, SpectrumStyle, CENTER_SCOPE_ID, CENTER_SPECTRUM_ID,
+    BannerCorner, BannerImageFloat, BarCap, BeatSettings, ColorMode, ColorSettings, LogoMotion,
+    LogoTransition,
+    RgbColor, ScopeColorMode, SpectrumLayout, SpectrumStyle, CENTER_SCOPE_ID, CENTER_SPECTRUM_ID,
 };
 use egui::epaint::{Mesh, Vertex, WHITE_UV};
 use egui::{self, Color32, Pos2, RichText, Sense, Shape, Stroke};
@@ -48,7 +49,10 @@ pub fn draw_settings_contents(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
 
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
-        for (i, label) in ["Live", "Logo", "Bg", "Look", "Tune", "More"].iter().enumerate() {
+        for (i, label) in ["Live", "Logo", "Bg", "Ads", "Look", "Tune", "More"]
+            .iter()
+            .enumerate()
+        {
             let selected = app.controls_tab == i;
             if ui
                 .selectable_label(selected, RichText::new(*label).strong())
@@ -81,10 +85,14 @@ pub fn draw_settings_contents(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
                     draw_background_section(ui, app);
                 }
                 3 => {
+                    section_hint(ui, "QR / Venmo / socials — slide-in banners");
+                    draw_banners_section(ui, app);
+                }
+                4 => {
                     section_hint(ui, "Spectrum ring around the disc");
                     draw_visualizer_section(ui, app);
                 }
-                4 => {
+                5 => {
                     section_hint(ui, "Gain & band balance for the room");
                     draw_tuning_section(ui, app);
                 }
@@ -844,6 +852,203 @@ fn draw_particles_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     });
 }
 
+fn draw_banners_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
+    section_frame(ui, "Banners", true, |ui| {
+        let mut changed = false;
+        {
+            let b = &mut app.settings.banners;
+            changed |= ui
+                .checkbox(&mut b.enabled, "Enable banners")
+                .on_hover_text("Slide promo cards onto the stage")
+                .changed();
+            changed |= ui
+                .checkbox(&mut b.always_on, "Always on")
+                .on_hover_text("Stay visible; with multiple cards, they still rotate")
+                .changed();
+            if !b.always_on {
+                changed |= slider(ui, "Stay secs", &mut b.hold_secs, 2.0..=60.0)
+                    .on_hover_text("How long each banner stays fully visible")
+                    .changed();
+                changed |= slider(ui, "Gap secs", &mut b.gap_secs, 0.0..=120.0)
+                    .on_hover_text("Hidden time between banners (0 = back-to-back)")
+                    .changed();
+            } else if b.items.len() > 1 {
+                changed |= slider(ui, "Rotate secs", &mut b.hold_secs, 3.0..=60.0)
+                    .on_hover_text("How long each card stays before sliding to the next")
+                    .changed();
+            }
+            changed |= slider(ui, "Slide secs", &mut b.slide_secs, 0.2..=1.5)
+                .on_hover_text("How fast the card slides in and out")
+                .changed();
+        }
+
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui.button("Add banner").clicked() {
+                app.add_banner();
+            }
+            if ui
+                .button("Show now")
+                .on_hover_text("Trigger the next slide-in immediately")
+                .clicked()
+            {
+                if !app.settings.banners.items.is_empty() {
+                    app.settings.banners.enabled = true;
+                    app.banner_phase = crate::app::state::BannerPhase::In { t: 0.0 };
+                    app.mark_session_dirty();
+                }
+            }
+        });
+
+        let n = app.settings.banners.items.len();
+        if n == 0 {
+            ui.label(
+                RichText::new("No banners yet — add one for a QR, Venmo, or social handle")
+                    .small()
+                    .color(Color32::DARK_GRAY),
+            );
+        } else {
+            ui.add_space(4.0);
+            let mut remove_idx: Option<usize> = None;
+            for i in 0..n {
+                let selected = app.banner_edit_index == i;
+                let label = {
+                    let item = &app.settings.banners.items[i];
+                    let title = if item.title.trim().is_empty() {
+                        "Untitled"
+                    } else {
+                        item.title.trim()
+                    };
+                    format!("{}. {title}", i + 1)
+                };
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(selected, label).clicked() {
+                        app.banner_edit_index = i;
+                    }
+                    if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                        remove_idx = Some(i);
+                    }
+                });
+            }
+            if let Some(i) = remove_idx {
+                app.remove_banner_at(i);
+            }
+
+            let idx = app.banner_edit_index.min(n.saturating_sub(1));
+            if idx < app.settings.banners.items.len() {
+                ui.add_space(6.0);
+                ui.label(RichText::new("Content").small().strong());
+                {
+                    let item = &mut app.settings.banners.items[idx];
+                    ui.horizontal(|ui| {
+                        ui.add_sized([110.0, 18.0], egui::Label::new("Title"));
+                        changed |= ui.text_edit_singleline(&mut item.title).changed();
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add_sized([110.0, 18.0], egui::Label::new("Subtitle"));
+                        changed |= ui.text_edit_singleline(&mut item.subtitle).changed();
+                    });
+                }
+
+                ui.add_space(4.0);
+                ui.label(RichText::new("Placement").small().strong());
+                {
+                    let item = &mut app.settings.banners.items[idx];
+                    ui.horizontal(|ui| {
+                        ui.add_sized([110.0, 18.0], egui::Label::new("Corner"));
+                        for (corner, label) in [
+                            (BannerCorner::TopLeft, "TL"),
+                            (BannerCorner::TopRight, "TR"),
+                            (BannerCorner::BottomLeft, "BL"),
+                            (BannerCorner::BottomRight, "BR"),
+                        ] {
+                            changed |= ui
+                                .selectable_value(&mut item.corner, corner, label)
+                                .on_hover_text(match corner {
+                                    BannerCorner::TopLeft => "Top left",
+                                    BannerCorner::TopRight => "Top right",
+                                    BannerCorner::BottomLeft => "Bottom left",
+                                    BannerCorner::BottomRight => "Bottom right",
+                                })
+                                .changed();
+                        }
+                    });
+                    changed |= slider(ui, "Offset X", &mut item.offset_x, -0.35..=0.35)
+                        .on_hover_text("Nudge from the corner (stage fraction)")
+                        .changed();
+                    changed |= slider(ui, "Offset Y", &mut item.offset_y, -0.35..=0.35)
+                        .on_hover_text("Nudge from the corner (stage fraction)")
+                        .changed();
+                    changed |= slider(ui, "Card size", &mut item.scale, 0.12..=0.42)
+                        .on_hover_text("Overall banner size")
+                        .changed();
+                    changed |= slider(ui, "Opacity", &mut item.opacity, 0.25..=1.0).changed();
+                    changed |= slider(ui, "Padding", &mut item.padding, 0.5..=1.8).changed();
+                    changed |= slider(ui, "Radius", &mut item.radius, 0.0..=28.0).changed();
+                }
+
+                ui.add_space(4.0);
+                ui.label(RichText::new("Image").small().strong());
+                ui.horizontal(|ui| {
+                    let ctx = ui.ctx().clone();
+                    if ui.button("Image…").on_hover_text("QR code or logo").clicked() {
+                        app.pick_banner_image(&ctx, idx);
+                    }
+                    let has_img = app.settings.banners.items[idx]
+                        .image_path
+                        .as_ref()
+                        .is_some_and(|p| !p.is_empty());
+                    if has_img && ui.button("Clear image").clicked() {
+                        app.clear_banner_image(idx);
+                    }
+                });
+                if let Some(path) = app.settings.banners.items[idx].image_path.clone() {
+                    ui.label(RichText::new(path).small().color(Color32::DARK_GRAY));
+                }
+                {
+                    let item = &mut app.settings.banners.items[idx];
+                    ui.horizontal(|ui| {
+                        ui.add_sized([110.0, 18.0], egui::Label::new("Float"));
+                        changed |= ui
+                            .selectable_value(&mut item.image_float, BannerImageFloat::Left, "Left")
+                            .changed();
+                        changed |= ui
+                            .selectable_value(
+                                &mut item.image_float,
+                                BannerImageFloat::Right,
+                                "Right",
+                            )
+                            .changed();
+                    });
+                    changed |= slider(ui, "Image size", &mut item.image_size, 0.4..=1.6)
+                        .on_hover_text("Relative to the card")
+                        .changed();
+                }
+
+                ui.add_space(4.0);
+                ui.label(RichText::new("Colors & type").small().strong());
+                {
+                    let item = &mut app.settings.banners.items[idx];
+                    changed |= color_picker_row(ui, "Background", &mut item.bg_color);
+                    changed |= color_picker_row(ui, "Title", &mut item.title_color);
+                    changed |= color_picker_row(ui, "Subtitle", &mut item.subtitle_color);
+                    changed |= slider(ui, "Title size", &mut item.title_size, 0.6..=1.8).changed();
+                    changed |= slider(ui, "Sub size", &mut item.subtitle_size, 0.6..=1.8).changed();
+                    changed |= ui.checkbox(&mut item.show_border, "Border").changed();
+                    if item.show_border {
+                        changed |= color_picker_row(ui, "Border", &mut item.border_color);
+                    }
+                    changed |= ui.checkbox(&mut item.show_shadow, "Shadow").changed();
+                }
+            }
+        }
+
+        if changed {
+            app.mark_session_dirty();
+        }
+    });
+}
+
 fn draw_background_section(ui: &mut egui::Ui, app: &mut LiveVisualizerApp) {
     section_frame(ui, "Background", true, |ui| {
         ui.horizontal(|ui| {
@@ -1527,6 +1732,8 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
         }
     }
 
+    draw_stage_banners(&painter, app, rect);
+
     if app.show_fft_debug {
         draw_fft_graph(&painter, rect, &features, color_mode, &colors);
     }
@@ -1551,6 +1758,187 @@ pub fn draw_stage(ui: &mut egui::Ui, app: &mut LiveVisualizerApp, show_debug: bo
             text,
             egui::FontId::monospace(13.0),
             Color32::from_rgb(0, 220, 180),
+        );
+    }
+}
+
+fn draw_stage_banners(
+    painter: &egui::Painter,
+    app: &LiveVisualizerApp,
+    stage_rect: egui::Rect,
+) {
+    let Some((idx, amount)) = app.banner_slide_amount() else {
+        return;
+    };
+    if amount <= 0.01 {
+        return;
+    }
+    let Some(item) = app.settings.banners.items.get(idx) else {
+        return;
+    };
+    let min_dim = stage_rect.width().min(stage_rect.height());
+    let scale = item.scale.clamp(0.12, 0.45);
+    let opacity = item.opacity.clamp(0.15, 1.0);
+    let margin = (min_dim * 0.022).clamp(10.0, 32.0);
+    let pad = ((min_dim * 0.016).clamp(8.0, 20.0)) * item.padding.clamp(0.4, 2.0);
+
+    let has_image = app
+        .banner_textures
+        .get(idx)
+        .and_then(|t| t.as_ref())
+        .is_some();
+    let img_side = (min_dim * scale * 0.85 * item.image_size.clamp(0.35, 1.8)).clamp(48.0, 260.0);
+    let text_w = (min_dim * scale * 1.55).clamp(120.0, 460.0);
+    let card_h = if has_image {
+        (img_side + pad * 2.0).max(min_dim * scale * 0.65)
+    } else {
+        (min_dim * scale * 0.55).clamp(64.0, 170.0)
+    };
+    let card_w = if has_image {
+        img_side + text_w + pad * 3.0
+    } else {
+        text_w + pad * 2.0
+    };
+
+    let nudge = egui::vec2(
+        item.offset_x.clamp(-0.4, 0.4) * stage_rect.width(),
+        item.offset_y.clamp(-0.4, 0.4) * stage_rect.height(),
+    );
+
+    // Dock flush to a corner, then apply x/y nudge.
+    let parked = match item.corner {
+        BannerCorner::TopLeft => egui::Rect::from_min_size(
+            egui::pos2(stage_rect.left() + margin, stage_rect.top() + margin),
+            egui::vec2(card_w, card_h),
+        ),
+        BannerCorner::TopRight => egui::Rect::from_min_size(
+            egui::pos2(
+                stage_rect.right() - margin - card_w,
+                stage_rect.top() + margin,
+            ),
+            egui::vec2(card_w, card_h),
+        ),
+        BannerCorner::BottomLeft => egui::Rect::from_min_size(
+            egui::pos2(
+                stage_rect.left() + margin,
+                stage_rect.bottom() - margin - card_h,
+            ),
+            egui::vec2(card_w, card_h),
+        ),
+        BannerCorner::BottomRight => egui::Rect::from_min_size(
+            egui::pos2(
+                stage_rect.right() - margin - card_w,
+                stage_rect.bottom() - margin - card_h,
+            ),
+            egui::vec2(card_w, card_h),
+        ),
+    }
+    .translate(nudge);
+
+    let travel = match item.corner {
+        BannerCorner::TopLeft => egui::vec2(-(card_w + margin * 2.0), -(card_h + margin * 2.0)),
+        BannerCorner::TopRight => egui::vec2(card_w + margin * 2.0, -(card_h + margin * 2.0)),
+        BannerCorner::BottomLeft => egui::vec2(-(card_w + margin * 2.0), card_h + margin * 2.0),
+        BannerCorner::BottomRight => egui::vec2(card_w + margin * 2.0, card_h + margin * 2.0),
+    };
+    let card = parked.translate(travel * (1.0 - amount));
+
+    let alpha = (opacity * (0.55 + 0.45 * amount) * 255.0).clamp(0.0, 255.0) as u8;
+    let radius = item.radius.clamp(0.0, 36.0);
+    let bg = item.bg_color.to_srgb();
+
+    if item.show_shadow {
+        painter.rect_filled(
+            card.translate(egui::vec2(0.0, 3.0)),
+            radius,
+            Color32::from_black_alpha((alpha as f32 * 0.45) as u8),
+        );
+    }
+    painter.rect_filled(
+        card,
+        radius,
+        Color32::from_rgba_unmultiplied(bg[0], bg[1], bg[2], alpha),
+    );
+    if item.show_border {
+        let bc = item.border_color.to_srgb();
+        painter.rect_stroke(
+            card,
+            radius,
+            Stroke::new(
+                1.0_f32,
+                Color32::from_rgba_unmultiplied(
+                    bc[0],
+                    bc[1],
+                    bc[2],
+                    (alpha as f32 * 0.55) as u8,
+                ),
+            ),
+        );
+    }
+
+    let inner = card.shrink(pad);
+    let mut text_rect = inner;
+    if let Some(Some(tex)) = app.banner_textures.get(idx) {
+        let float_left = item.image_float == BannerImageFloat::Left;
+        let img_origin_x = if float_left {
+            inner.left()
+        } else {
+            inner.right() - img_side
+        };
+        let img_rect = egui::Rect::from_min_size(
+            egui::pos2(img_origin_x, inner.top()),
+            egui::vec2(img_side, img_side),
+        )
+        .translate(egui::vec2(
+            0.0,
+            ((inner.height() - img_side) * 0.5).max(0.0),
+        ));
+        let fit = fit_rect(img_rect, tex.size);
+        painter.image(
+            tex.texture.id(),
+            fit,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::from_rgba_unmultiplied(255, 255, 255, alpha),
+        );
+        text_rect = if float_left {
+            egui::Rect::from_min_max(
+                egui::pos2(img_rect.right() + pad, inner.top()),
+                inner.max,
+            )
+        } else {
+            egui::Rect::from_min_max(
+                inner.min,
+                egui::pos2(img_rect.left() - pad, inner.bottom()),
+            )
+        };
+    }
+
+    let title = item.title.trim();
+    let subtitle = item.subtitle.trim();
+    let title_size =
+        ((min_dim * 0.028).clamp(15.0, 30.0) * item.title_size.clamp(0.5, 2.0)).clamp(12.0, 42.0);
+    let sub_size = ((min_dim * 0.018).clamp(11.0, 20.0) * item.subtitle_size.clamp(0.5, 2.0))
+        .clamp(10.0, 28.0);
+    let tc = item.title_color.to_srgb();
+    let sc = item.subtitle_color.to_srgb();
+    let mut cursor_y = text_rect.top() + text_rect.height() * 0.22;
+    if !title.is_empty() {
+        painter.text(
+            egui::pos2(text_rect.left(), cursor_y),
+            egui::Align2::LEFT_TOP,
+            title,
+            egui::FontId::proportional(title_size),
+            Color32::from_rgba_unmultiplied(tc[0], tc[1], tc[2], alpha),
+        );
+        cursor_y += title_size * 1.35;
+    }
+    if !subtitle.is_empty() {
+        painter.text(
+            egui::pos2(text_rect.left(), cursor_y),
+            egui::Align2::LEFT_TOP,
+            subtitle,
+            egui::FontId::proportional(sub_size),
+            Color32::from_rgba_unmultiplied(sc[0], sc[1], sc[2], alpha),
         );
     }
 }

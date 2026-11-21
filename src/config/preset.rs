@@ -140,6 +140,187 @@ pub enum LogoMotion {
     Pendulum,
 }
 
+/// Which stage corner a banner docks to (slides in from that corner).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BannerCorner {
+    #[serde(alias = "left", alias = "top")]
+    TopLeft,
+    #[default]
+    #[serde(alias = "right")]
+    TopRight,
+    #[serde(alias = "bottom")]
+    BottomLeft,
+    BottomRight,
+}
+
+/// Where the banner image sits relative to the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BannerImageFloat {
+    #[default]
+    Left,
+    Right,
+}
+
+/// One advertisement / promo card (QR, Venmo, socials, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BannerItem {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub subtitle: String,
+    /// Optional image (QR code, logo, etc.).
+    #[serde(default)]
+    pub image_path: Option<String>,
+    #[serde(default, alias = "edge")]
+    pub corner: BannerCorner,
+    /// Image on the left or right of the text.
+    #[serde(default)]
+    pub image_float: BannerImageFloat,
+    /// Image size relative to the card (1 = default).
+    #[serde(default = "default_banner_image_size")]
+    pub image_size: f32,
+    /// Card opacity (0..1).
+    #[serde(default = "default_banner_opacity")]
+    pub opacity: f32,
+    /// Card size as a fraction of the shorter stage axis.
+    #[serde(default = "default_banner_scale")]
+    pub scale: f32,
+    /// Extra nudge from the docked corner (−1…1 of stage size).
+    #[serde(default)]
+    pub offset_x: f32,
+    #[serde(default)]
+    pub offset_y: f32,
+    #[serde(default = "default_banner_bg")]
+    pub bg_color: RgbColor,
+    #[serde(default = "default_banner_title_color")]
+    pub title_color: RgbColor,
+    #[serde(default = "default_banner_subtitle_color")]
+    pub subtitle_color: RgbColor,
+    /// Title font scale (1 = default).
+    #[serde(default = "default_one_banner")]
+    pub title_size: f32,
+    /// Subtitle font scale (1 = default).
+    #[serde(default = "default_one_banner")]
+    pub subtitle_size: f32,
+    /// Inner padding scale (1 = default).
+    #[serde(default = "default_one_banner")]
+    pub padding: f32,
+    /// Corner radius in px-ish (scaled lightly with stage).
+    #[serde(default = "default_banner_radius")]
+    pub radius: f32,
+    #[serde(default = "default_true_banner")]
+    pub show_border: bool,
+    #[serde(default = "default_banner_border")]
+    pub border_color: RgbColor,
+    /// Soft drop shadow under the card.
+    #[serde(default = "default_true_banner")]
+    pub show_shadow: bool,
+}
+
+fn default_banner_image_size() -> f32 {
+    1.0
+}
+fn default_one_banner() -> f32 {
+    1.0
+}
+fn default_banner_radius() -> f32 {
+    10.0
+}
+fn default_true_banner() -> bool {
+    true
+}
+fn default_banner_bg() -> RgbColor {
+    RgbColor::new(0.05, 0.055, 0.08)
+}
+fn default_banner_title_color() -> RgbColor {
+    RgbColor::new(0.94, 0.97, 1.0)
+}
+fn default_banner_subtitle_color() -> RgbColor {
+    RgbColor::new(0.63, 0.75, 0.82)
+}
+fn default_banner_border() -> RgbColor {
+    RgbColor::new(0.47, 0.78, 1.0)
+}
+
+impl Default for BannerItem {
+    fn default() -> Self {
+        Self {
+            title: "Scan to connect".into(),
+            subtitle: "Follow / tip / RSVP".into(),
+            image_path: None,
+            corner: BannerCorner::TopRight,
+            image_float: BannerImageFloat::Left,
+            image_size: default_banner_image_size(),
+            opacity: default_banner_opacity(),
+            scale: default_banner_scale(),
+            offset_x: 0.0,
+            offset_y: 0.0,
+            bg_color: default_banner_bg(),
+            title_color: default_banner_title_color(),
+            subtitle_color: default_banner_subtitle_color(),
+            title_size: 1.0,
+            subtitle_size: 1.0,
+            padding: 1.0,
+            radius: default_banner_radius(),
+            show_border: true,
+            border_color: default_banner_border(),
+            show_shadow: true,
+        }
+    }
+}
+
+/// Session advertisement banners — not part of look presets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BannerSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    /// How long the banner stays fully on screen (seconds).
+    #[serde(default = "default_banner_hold")]
+    pub hold_secs: f32,
+    /// Time hidden between appearances. Ignored when `always_on`.
+    #[serde(default = "default_banner_gap")]
+    pub gap_secs: f32,
+    /// Stay visible (still slides between items if there are several).
+    #[serde(default)]
+    pub always_on: bool,
+    /// Slide in / out duration (seconds).
+    #[serde(default = "default_banner_slide")]
+    pub slide_secs: f32,
+    #[serde(default)]
+    pub items: Vec<BannerItem>,
+}
+
+fn default_banner_hold() -> f32 {
+    8.0
+}
+fn default_banner_gap() -> f32 {
+    20.0
+}
+fn default_banner_slide() -> f32 {
+    0.55
+}
+fn default_banner_opacity() -> f32 {
+    0.92
+}
+fn default_banner_scale() -> f32 {
+    0.22
+}
+
+impl Default for BannerSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hold_secs: default_banner_hold(),
+            gap_secs: default_banner_gap(),
+            always_on: false,
+            slide_secs: default_banner_slide(),
+            items: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub last_audio_device: Option<String>,
@@ -158,6 +339,9 @@ pub struct AppSettings {
     /// Per-logo styles (parallel to `logo_paths`).
     #[serde(default)]
     pub logo_styles: Vec<LogoStyle>,
+    /// Event ads / QR / social banners (session media — not look presets).
+    #[serde(default)]
+    pub banners: BannerSettings,
     #[serde(default)]
     pub stage: StageSettings,
     #[serde(default)]
@@ -486,6 +670,7 @@ impl Default for AppSettings {
             logo_path: None,
             logo_paths: Vec::new(),
             logo_styles: Vec::new(),
+            banners: BannerSettings::default(),
             stage: StageSettings::default(),
             visualizer: VisualizerSettings::default(),
             particles: ParticleSettings::default(),
