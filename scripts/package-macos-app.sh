@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Build a double-clickable macOS .app from a release binary.
+# OPTIONAL — Build a double-clickable macOS .app from a release binary.
+# CI currently ships a portable zip (no codesign / notarization yet).
+# Use this locally once you have a Developer ID, or for experiments.
 # Usage: package-macos-app.sh <path-to-binary> <output-dir> [app-name]
 set -euo pipefail
 

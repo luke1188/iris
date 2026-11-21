@@ -47,34 +47,49 @@ jobs:
       - name: Build release
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      # Windows: just the exe (icon + presets are baked into the binary).
-      - name: Package Windows
-        if: matrix.kind == 'windows'
+      # Portable folder — no .app / codesign yet (signing keys TBD).
+      - name: Package
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "dist/${{ matrix.artifact }}"
-          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
-            "dist/${{ matrix.artifact }}/"
-          ls -la "dist/${{ matrix.artifact }}"
-
-      # macOS: .app only — Actions already zips folders for download.
-      # Release zips are created with ditto (plain zip marks .app as "damaged").
-      - name: Package macOS
-        if: matrix.kind == 'macos'
-        shell: bash
-        run: |
-          set -euo pipefail
-          chmod +x scripts/package-macos-app.sh
-          VERSION="${GITHUB_REF_NAME#v}"
-          [[ "$GITHUB_REF" == refs/tags/* ]] || VERSION="0.1.0"
+          bin="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          if [ ! -f "$bin" ]; then
+            echo "Missing binary at $bin"
+            ls -la "target/${{ matrix.target }}/release/" || true
+            exit 1
+          fi
           staging="dist/${{ matrix.artifact }}"
-          VERSION="$VERSION" ./scripts/package-macos-app.sh \
-            "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
-            "$staging"
-          test -x "$staging/Iris Visualizer.app/Contents/MacOS/iris_visualizer"
-          file "$staging/Iris Visualizer.app/Contents/MacOS/iris_visualizer"
+          mkdir -p "$staging"
+          cp "$bin" "$staging/"
+          chmod +x "$staging/${{ matrix.binary }}" || true
+          if [ -f README.md ]; then
+            cp README.md "$staging/"
+          fi
+          if [[ "${{ matrix.kind }}" == "macos" ]]; then
+            cat > "$staging/RUN-MACOS.txt" <<'EOF'
+Iris Visualizer — macOS (Apple Silicon) portable build
+======================================================
 
+No .app bundle yet (code signing / notarization coming later).
+
+1. Unzip this folder somewhere permanent (not Downloads-only).
+2. In Terminal:
+
+   cd /path/to/iris_visualizer-macos-aarch64
+   xattr -cr iris_visualizer
+   chmod +x iris_visualizer
+   ./iris_visualizer
+
+If Gatekeeper blocks it: System Settings → Privacy & Security → allow,
+or right-click the binary → Open (after xattr).
+
+Presets / icons are baked into the binary.
+EOF
+          fi
+          ls -la "$staging"
+          file "$staging/${{ matrix.binary }}" || true
+
+      # Upload the folder (Actions wraps it once for download).
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -82,20 +97,13 @@ jobs:
           path: dist/${{ matrix.artifact }}/
           if-no-files-found: error
 
-      # Only for tagged releases — GitHub Releases need a single archive file.
       - name: Zip for GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist/release
-          if [[ "${{ matrix.kind }}" == "macos" ]]; then
-            ditto -c -k --keepParent \
-              "dist/${{ matrix.artifact }}/Iris Visualizer.app" \
-              "dist/release/${{ matrix.artifact }}.zip"
-          else
-            (cd dist && zip -r "release/${{ matrix.artifact }}.zip" "${{ matrix.artifact }}")
-          fi
+          (cd dist && zip -r "release/${{ matrix.artifact }}.zip" "${{ matrix.artifact }}")
           ls -la dist/release
 
       - name: Upload release zip
@@ -129,8 +137,11 @@ jobs:
           files: release/*.zip
           body: |
             ## Downloads
-            - **Windows:** unzip → `iris_visualizer.exe`
-            - **macOS (Apple Silicon):** unzip → **`Iris Visualizer.app`**
-              - If macOS says damaged/untrusted: `xattr -cr "Iris Visualizer.app"` then right-click → Open
+            - **Windows:** unzip → run `iris_visualizer.exe`
+            - **macOS (Apple Silicon):** unzip → see `RUN-MACOS.txt`
+              ```bash
+              xattr -cr iris_visualizer && chmod +x iris_visualizer && ./iris_visualizer
+              ```
+              Portable binary for now (no signed `.app` until Developer ID is set up).
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

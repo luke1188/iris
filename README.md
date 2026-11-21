@@ -16,10 +16,13 @@ macOS / Linux can build for development; WASAPI loopback notes below apply to Wi
 cargo run --release
 ```
 
-CI builds **Windows x64** and **macOS Apple Silicon** on `main` / PRs (Actions artifacts). Tag `v*` for a GitHub Release.
+CI builds **Windows x64** and **macOS Apple Silicon** portable zips on `main` / PRs (Actions artifacts). Tag `v*` for a GitHub Release.
 
 - **Windows:** `iris_visualizer.exe`
-- **macOS:** `Iris Visualizer.app` — if Gatekeeper says damaged: `xattr -cr "Iris Visualizer.app"`, then right-click → Open
+- **macOS:** raw `iris_visualizer` binary (no signed `.app` yet) — see `RUN-MACOS.txt` in the zip:
+  ```bash
+  xattr -cr iris_visualizer && chmod +x iris_visualizer && ./iris_visualizer
+  ```
 
 ### Presets
 
