@@ -18,11 +18,17 @@ cargo run --release
 
 CI builds **Windows x64** and **macOS Apple Silicon** portable zips on `main` / PRs (Actions artifacts). Tag `v*` for a GitHub Release.
 
-- **Windows:** `iris_visualizer.exe`
-- **macOS:** raw `iris_visualizer` binary (no signed `.app` yet) — see `RUN-MACOS.txt` in the zip:
+- **Windows:** unzip → run `iris_visualizer.exe`
+- **macOS (Apple Silicon):** unzip → run the `iris_visualizer` binary (no signed `.app` yet — Developer ID / notarization later). From Terminal:
+
   ```bash
-  xattr -cr iris_visualizer && chmod +x iris_visualizer && ./iris_visualizer
+  cd /path/to/iris_visualizer-macos-aarch64
+  xattr -cr iris_visualizer
+  chmod +x iris_visualizer
+  ./iris_visualizer
   ```
+
+  If Gatekeeper blocks it: System Settings → Privacy & Security → Allow, or right-click → Open after `xattr`. Presets are baked into the binary.
 
 ### Presets
 
